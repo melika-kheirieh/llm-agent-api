@@ -1,0 +1,14 @@
+# --- Runtime dependencies ---
+fastapi==0.115.6
+uvicorn[standard]==0.30.6
+pydantic==2.10.6
+SQLAlchemy==2.0.36
+python-dotenv==1.0.1
+python-json-logger==2.0.7
+
+# OpenAI client (optional; only used when LLM_PROVIDER=openai)
+openai>=1.0.0
+
+# --- Development / testing ---
+pytest==8.3.4
+pytest-mock==3.14.0
