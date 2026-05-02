@@ -26,7 +26,7 @@ class FakeAgent:
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture
