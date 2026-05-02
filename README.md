@@ -7,6 +7,13 @@ API → Agent → LLM (provider-agnostic) → Persistence, with lightweight obse
 
 ---
 
+## Quick Demo
+
+See a 30–60 second demo flow here:  
+👉 [docs/demo.md](docs/demo.md)
+
+---
+
 ## Why this project exists
 
 Most LLM demos are simple wrappers around an API call.
@@ -73,13 +80,13 @@ python -m uvicorn app.main:app --reload
 
 Server will be available at:
 
-* [http://127.0.0.1:8000](http://127.0.0.1:8000)
+[http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 ---
 
 ## Setup
 
-### 1) Ollama (local) — start and pull a model
+### 1) Ollama (local)
 
 ```bash
 ollama serve
@@ -133,9 +140,12 @@ Successful response:
 }
 ```
 
-### Validation error example
+---
 
-Empty or missing `message` returns **400 Bad Request**:
+### Validation behavior
+
+* Missing `message` → **422 Unprocessable Entity** (FastAPI validation)
+* Empty `message` → **400 Bad Request**
 
 ```json
 {
@@ -147,7 +157,7 @@ Empty or missing `message` returns **400 Bad Request**:
 
 ## API Contract
 
-* [docs/api-contract.md](docs/api-contract.md)
+👉 [docs/api-contract.md](docs/api-contract.md)
 
 ---
 
