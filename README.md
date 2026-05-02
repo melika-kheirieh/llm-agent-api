@@ -7,6 +7,21 @@ API → Agent → LLM (provider-agnostic) → Persistence, with lightweight obse
 
 ---
 
+## Why this project exists
+
+Most LLM demos are simple wrappers around an API call.
+
+This project focuses on **structure and boundaries**, not feature breadth.
+
+The goal is to demonstrate how to design a backend for LLM-based applications where:
+- the API layer is independent of the model provider
+- the agent logic is isolated and testable
+- external dependencies (LLMs) are clearly separated from core logic
+
+This is a foundation, not a feature-complete agent system.
+
+---
+
 ## Features
 
 - FastAPI `POST /chat` endpoint
@@ -18,6 +33,24 @@ API → Agent → LLM (provider-agnostic) → Persistence, with lightweight obse
 - Dependency-injection friendly design (testable without real LLM calls)
 - Lightweight observability (structured logging + request latency)
 - Design rationale: [docs/DESIGN.md](docs/DESIGN.md)
+
+---
+
+## Architecture at a glance
+
+Client  
+  ↓  
+FastAPI (/chat)  
+  ↓  
+Agent (application logic)  
+  ↓  
+LLMClient (interface)  
+  ↓  
+Provider (Ollama / OpenAI)  
+  ↓  
+Persistence (SQLite)  
+
+Each layer has a single responsibility and can be tested independently.
 
 ---
 
@@ -57,8 +90,6 @@ ollama pull gemma
 
 ### 2) Environment variables
 
-Copy `.env.example` to `.env` and adjust values as needed:
-
 ```bash
 cp .env.example .env
 ```
@@ -78,25 +109,8 @@ DATABASE_URL=sqlite:///./app.db
 LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
-# Optional: custom gateway (OpenRouter, proxy, etc.)
 # OPENAI_BASE_URL=https://api.openai.com/v1
 DATABASE_URL=sqlite:///./app.db
-```
-
----
-
-### 3) Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-### 4) Run the API
-
-```bash
-python -m uvicorn app.main:app --reload
 ```
 
 ---
@@ -133,29 +147,24 @@ Empty or missing `message` returns **400 Bad Request**:
 
 ## API Contract
 
-A concise description of the request/response behavior:
-
 * [docs/api-contract.md](docs/api-contract.md)
 
 ---
 
 ## Database
 
-* Chats are stored in `app.db` (SQLite)
+* SQLite database: `app.db`
 * Table: `chat_messages`
-* For inspection, you can use **DB Browser for SQLite**
 
 ---
 
 ## Testing
 
-Tests are written using `pytest` and are designed to run **without a real LLM**.
+Tests are written using `pytest` and run **without a real LLM**.
 
 * Agent dependency is overridden using FastAPI DI
 * A `FakeAgent` simulates responses and failures
-* Persistence is verified via function-level mocking
-
-Run:
+* Persistence is verified via mocking
 
 ```bash
 pytest -q
@@ -163,36 +172,39 @@ pytest -q
 
 ---
 
-## Observability (Mini)
-
-The API includes lightweight observability features:
+## Observability (Minimal)
 
 * Structured JSON logs
-* HTTP middleware for request latency logging (`latency_ms`)
-* Event-style logs (success/failure markers)
-
-This is intentionally minimal and avoids heavy tracing frameworks.
+* Request latency logging (`latency_ms`)
+* Success/failure markers
 
 ---
 
-## Design Notes
+## What this project is NOT
 
-* The API layer is **provider-agnostic**
-* LLM provider selection is done via environment variables only
-* Agent, persistence, and transport layers are clearly separated
-* Hooks are intentionally left for future extensions:
+This project intentionally does NOT include:
 
-  * Tools
-  * Memory
-  * RAG
+* RAG (retrieval-augmented generation)
+* vector databases
+* authentication / multi-user support
+* streaming responses
+* complex memory systems
+* UI layer
+
+These are valid extensions, but are excluded to keep the project:
+
+* simple
+* testable
+* easy to review
+
+The focus is on correctness, structure, and clean design.
 
 ---
 
 ## Running with Docker (API only)
 
-The FastAPI service can run inside Docker.
-The LLM runtime is expected to run **outside** the container
-(Ollama locally, or OpenAI over the network).
+The FastAPI service runs in Docker.
+The LLM runtime runs **outside** the container.
 
 ### Build
 
@@ -200,7 +212,7 @@ The LLM runtime is expected to run **outside** the container
 docker build -t llm-agent-api .
 ```
 
-### Run (Ollama on host — macOS)
+### Run (Ollama)
 
 ```bash
 docker run --rm -p 8000:8000 \
@@ -210,9 +222,6 @@ docker run --rm -p 8000:8000 \
   -e DATABASE_URL=sqlite:///./app.db \
   llm-agent-api
 ```
-
-> macOS note: `host.docker.internal` allows the containerized API
-> to access the locally running Ollama service.
 
 ### Run (OpenAI)
 

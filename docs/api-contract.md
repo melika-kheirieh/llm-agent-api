@@ -2,13 +2,13 @@
 
 ## Endpoint
 
-POST /chat
+**POST /chat**
 
 ---
 
-## Request Body
+## Request
 
-Content-Type: `application/json`
+**Content-Type:** `application/json`
 
 ```json
 {
@@ -16,15 +16,23 @@ Content-Type: `application/json`
 }
 ````
 
-### Validation
+---
+
+## Validation Rules
 
 * `message` is **required**
 * `message` must be a **non-empty string**
-* Empty or missing `message` is rejected
+
+### Validation behavior
+
+* Missing `message` → **422 Unprocessable Entity** (handled by FastAPI)
+* Empty `message` → **400 Bad Request** (business-level validation)
 
 ---
 
-## Successful Response
+## Response
+
+### Success (200 OK)
 
 ```json
 {
@@ -34,11 +42,17 @@ Content-Type: `application/json`
 
 ---
 
-## Error Responses
+## Error Handling
 
-### 400 Bad Request (validation)
+The API distinguishes failures across different layers:
 
-Returned when `message` is missing or empty.
+### 400 Bad Request — Business validation error
+
+Returned when the input is structurally valid but semantically invalid.
+
+Example:
+
+* `message` is an empty string
 
 ```json
 {
@@ -46,22 +60,65 @@ Returned when `message` is missing or empty.
 }
 ```
 
-### 502 Bad Gateway (LLM provider failure)
+---
 
-Returned when the upstream LLM call fails.
+### 422 Unprocessable Entity — Schema validation error
 
-### 503 Service Unavailable (persistence failure)
+Returned when the request body does not match the expected schema.
 
-Returned when the database is unavailable or persistence fails.
+Example:
 
-### 500 Internal Server Error
-
-Returned for unexpected internal errors.
+* `message` field is missing
 
 ---
 
-## Notes
+### 502 Bad Gateway — Upstream LLM failure
 
-* `400` is intentionally used for input validation (instead of FastAPI default `422`)
-* `502` distinguishes upstream LLM failures from internal application errors
-* The contract is designed to remain stable as tools or memory are added
+Returned when the LLM provider (e.g., OpenAI or Ollama) fails.
+
+This indicates:
+
+* the request was valid
+* the failure occurred in an external dependency
+
+---
+
+### 503 Service Unavailable — Persistence failure
+
+Returned when the database is unavailable or write operations fail.
+
+This indicates:
+
+* the agent pipeline succeeded
+* but persistence could not be completed
+
+---
+
+### 500 Internal Server Error — Unexpected failure
+
+Returned for unhandled or unknown internal errors.
+
+---
+
+## Design Rationale
+
+* **422 for schema validation**
+  FastAPI's built-in validation is used for structural request errors.
+
+* **400 for business validation**
+  Application-level validation (e.g., empty message) is handled explicitly.
+
+* **502 for LLM failures**
+  LLM providers are treated as upstream dependencies.
+
+* **503 for persistence issues**
+  Database failures are treated as availability problems.
+
+* **Clear failure boundaries**
+  Each status code maps to a specific layer:
+
+  * 400 → business logic
+  * 422 → schema validation
+  * 502 → external dependency (LLM)
+  * 503 → infrastructure (database)
+  * 500 → internal application

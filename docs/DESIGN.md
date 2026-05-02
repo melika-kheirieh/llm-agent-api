@@ -13,6 +13,7 @@ The goal is **clarity and correctness**, not feature breadth.
 POST `/chat`
 
 **Request**
+
 ```json
 {
   "message": "User question"
@@ -36,7 +37,7 @@ Invalid or empty input is rejected with `400 Bad Request`.
 ```
 Client
   ↓
-FastAPI  (POST /chat)
+FastAPI (POST /chat)
   ↓
 Agent.run()
   ↓
@@ -47,9 +48,12 @@ LLMClient (interface)
 Persistence (SQLite)
 ```
 
-Key property:
-The API layer is **provider-agnostic**.
-LLM selection happens only via environment variables.
+**Key properties**
+
+* The API layer is **provider-agnostic**
+* The agent encapsulates application logic
+* LLM providers are treated as external dependencies
+* Each layer has a clear responsibility and boundary
 
 ---
 
@@ -57,7 +61,7 @@ LLM selection happens only via environment variables.
 
 1. Receive `message` via `POST /chat`
 2. Validate input (reject missing or empty message with `400`)
-3. Run agent pipeline:
+3. Execute agent pipeline:
 
    * `analyze(message)`
    * `respond(message, analysis)` → LLM call
@@ -71,12 +75,14 @@ LLM selection happens only via environment variables.
 The agent is intentionally minimal:
 
 * A single, explicit pipeline (`analyze → respond`)
-* No implicit retries or hidden logic
-* Designed to be extended later with:
+* No implicit retries or hidden control flow
+* Fully testable without real LLM calls
 
-  * Tools
-  * Memory
-  * Multi-step workflows
+Designed for future extension with:
+
+* Tools
+* Memory
+* Multi-step workflows
 
 The current implementation favors transparency over sophistication.
 
@@ -86,30 +92,36 @@ The current implementation favors transparency over sophistication.
 
 Runtime behavior is configured exclusively via environment variables:
 
-* `LLM_PROVIDER=ollama`
+**Ollama (local)**
 
-  * `OLLAMA_BASE_URL`
-  * `OLLAMA_MODEL`
+* `LLM_PROVIDER=ollama`
+* `OLLAMA_BASE_URL`
+* `OLLAMA_MODEL`
+
+**OpenAI (cloud)**
 
 * `LLM_PROVIDER=openai`
+* `OPENAI_API_KEY`
+* `OPENAI_MODEL`
+* Optional `OPENAI_BASE_URL`
 
-  * `OPENAI_API_KEY`
-  * `OPENAI_MODEL`
-  * Optional `OPENAI_BASE_URL`
+This approach:
 
-This keeps deployment simple and avoids leaking provider concerns into the API layer.
+* Keeps the API layer clean
+* Avoids leaking provider-specific logic
+* Makes switching providers trivial
 
 ---
 
 ## Persistence
 
-A minimal database layer stores chat history with fields:
+A minimal database layer stores chat history:
 
 * `message`
 * `response`
 * `timestamp`
 
-SQLite is chosen for this task because it:
+SQLite is chosen because it:
 
 * Requires zero setup
 * Is easy to inspect locally
@@ -119,14 +131,18 @@ SQLite is chosen for this task because it:
 
 ## Error Strategy
 
-The API exposes explicit and intentional failure modes:
+The API exposes explicit failure boundaries:
 
-* Invalid input (missing or empty `message`) → `400`
+* Client input error → `400`
 * Upstream LLM failure → `502`
-* Persistence / database failure → `503`
+* Persistence failure → `503`
 * Unexpected internal error → `500`
 
-This separation helps distinguish user errors, upstream issues, and internal bugs.
+This separation ensures failures are:
+
+* easier to debug
+* easier to reason about
+* correctly attributed to their source
 
 ---
 
@@ -138,22 +154,25 @@ To avoid over-engineering:
 * Request latency logging (`latency_ms`)
 * Event-style success/failure logs
 
-No tracing frameworks or metrics stacks are included in this task.
+No tracing frameworks or metrics stacks are included.
 
 ---
 
 ## Explicit Non-Goals (Scope Control)
 
-The following features are **deliberately out of scope**:
+The following features are deliberately out of scope:
 
 * Retrieval-Augmented Generation (RAG) or vector databases
 * Authentication or rate limiting
 * Streaming responses or WebSockets
 * Multi-user session management
-* OpenWebUI integration
-  (the architecture is compatible, but not implemented)
+* UI / OpenWebUI integration
 
-These omissions are intentional to keep the solution focused and reviewer-friendly.
+These omissions are intentional to keep the system:
+
+* simple
+* testable
+* easy to review
 
 ---
 
@@ -162,4 +181,4 @@ These omissions are intentional to keep the solution focused and reviewer-friend
 * Prefer simple, explicit abstractions over cleverness
 * Optimize for readability and ease of review
 * Keep execution predictable and debuggable
-* Avoid premature infrastructure or feature complexity
+* Avoid premature complexity (features or infrastructure)
