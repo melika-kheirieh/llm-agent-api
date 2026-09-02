@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import get_agent
 from app.infra.errors import UpstreamLLMError, DatabaseError
-from app.db.repo import get_trace, save_chat_and_trace
+from app.db.repo import get_trace, ping_db, save_chat_and_trace
 import logging
 
 
@@ -59,3 +59,18 @@ async def get_run(run_id: str) -> dict:
     if trace is None:
         raise HTTPException(status_code=404, detail="run not found")
     return trace
+
+
+@router.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready() -> dict:
+    try:
+        await ping_db()
+    except DatabaseError:
+        logger.error("ready_db_failure")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok"}

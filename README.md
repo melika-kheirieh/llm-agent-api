@@ -84,6 +84,11 @@ curl -s http://127.0.0.1:8000/runs/{run_id}
 
 Empty `message` → **400**. Missing field → **422**. LLM failure → **502**. DB failure → **503**. Unknown run → **404**.
 
+**Health**
+
+- `GET /health` — process liveness (no database, no LLM)
+- `GET /ready` — `SELECT 1` against SQLite; **503** if the database is unavailable
+
 ---
 
 ## Testing

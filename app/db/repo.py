@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.infra.config import settings
@@ -32,6 +32,14 @@ async def init_db() -> None:
 
 async def close_db() -> None:
     await engine.dispose()
+
+
+async def ping_db() -> None:
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as e:
+        raise DatabaseError(str(e))
 
 
 def _agent_run(trace: ExecutionTrace) -> AgentRun:
