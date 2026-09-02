@@ -18,6 +18,7 @@ class Settings(BaseModel):
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma")
 
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./app.db")
+    llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 
 
 

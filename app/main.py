@@ -3,6 +3,7 @@ from fastapi import FastAPI
 
 from app.api.routes import router
 from app.db.repo import close_db, init_db
+from app.infra.container import close_runtime, init_runtime
 from app.middleware.observability import ObservabilityMiddleware
 from app.infra.logging import setup_logging
 
@@ -10,7 +11,9 @@ from app.infra.logging import setup_logging
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await init_runtime()
     yield
+    await close_runtime()
     await close_db()
 
 

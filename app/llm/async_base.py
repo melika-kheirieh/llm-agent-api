@@ -11,3 +11,7 @@ class AsyncLLMClient(ABC):
     @abstractmethod
     async def generate(self, prompt: str) -> str:
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        """Release provider HTTP resources. Default is a no-op."""
+        return None

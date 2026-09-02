@@ -59,8 +59,7 @@ def test_openai_sdk_error(mocker):
 def _mock_httpx_client(mocker, *, post_return=None, post_side_effect=None):
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=post_return, side_effect=post_side_effect)
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
+    mock_client.aclose = AsyncMock()
     mocker.patch("app.llm.ollama.httpx.AsyncClient", return_value=mock_client)
     return mock_client
 
@@ -103,3 +102,49 @@ def test_ollama_http_error(mocker):
 
     with pytest.raises(UpstreamLLMError, match="connection refused"):
         _run(client.generate("hi"))
+
+
+def test_openai_does_not_wrap_cancellation(mocker):
+    mock_client = MagicMock()
+    mock_client.responses.create = AsyncMock(side_effect=asyncio.CancelledError)
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test")
+
+    async def _generate():
+        with pytest.raises(asyncio.CancelledError):
+            await client.generate("hi")
+
+    _run(_generate())
+
+
+def test_openai_aclose_closes_client(mocker):
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock()
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test")
+    _run(client.aclose())
+
+    mock_client.close.assert_awaited_once()
+
+
+def test_ollama_does_not_wrap_cancellation(mocker):
+    _mock_httpx_client(mocker, post_side_effect=asyncio.CancelledError)
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+
+    async def _generate():
+        with pytest.raises(asyncio.CancelledError):
+            await client.generate("hi")
+
+    _run(_generate())
+
+
+def test_ollama_aclose_closes_httpx_client(mocker):
+    mock_client = _mock_httpx_client(mocker)
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+    _run(client.aclose())
+
+    mock_client.aclose.assert_awaited_once()
