@@ -7,15 +7,16 @@ from app.agent.contracts import AgentAction, AgentRequest
 from app.agent.llm_router import (
     ROUTING_PROMPT_MARKER,
     LlmAgentRouter,
-    parse_routing_decision,
+    decision_from_routing_output,
 )
 from app.agent.router import AgentRouter
+from app.agent.schemas import RoutingOutput
 from app.agent.state import AgentState, AgentStatus
 from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
 from app.infra.config import ROUTER_MODE_KEYWORD, settings
 from app.infra.container import build_runtime
-from app.infra.errors import FailureClass, RoutingError
+from app.infra.errors import FailureClass, ModelError, RoutingError
 from app.observability.events import TraceEventName
 from app.observability.trace import trace_from_state
 
@@ -31,6 +32,28 @@ class RoutingFakeLLM:
         if ROUTING_PROMPT_MARKER in prompt:
             return self.route
         return self.answer
+
+
+class TypedRoutingLLM:
+    def __init__(self, output: RoutingOutput, answer: str = "from llm"):
+        self.output = output
+        self.answer = answer
+        self.structured_prompts: list[str] = []
+
+    async def generate(self, prompt: str) -> str:
+        return self.answer
+
+    async def generate_structured(self, prompt: str, schema):
+        self.structured_prompts.append(prompt)
+        return schema.model_validate(self.output.model_dump())
+
+
+class FailingStructuredLLM:
+    async def generate(self, prompt: str) -> str:
+        return "unused"
+
+    async def generate_structured(self, prompt: str, schema):
+        raise ModelError("provider down")
 
 
 class RecordingTool:
@@ -58,9 +81,9 @@ def _success_tool() -> RecordingTool:
     )
 
 
-def test_parse_direct_decision():
-    decision = parse_routing_decision(
-        '{"action": "direct", "tool_name": null, "arguments": null}'
+def test_decision_from_direct_output():
+    decision = decision_from_routing_output(
+        RoutingOutput(action=AgentAction.DIRECT, tool_name=None, arguments=None)
     )
 
     assert decision.action == AgentAction.DIRECT
@@ -68,10 +91,13 @@ def test_parse_direct_decision():
     assert decision.arguments is None
 
 
-def test_parse_work_order_lookup_decision():
-    decision = parse_routing_decision(
-        '{"action": "use_tool", "tool_name": "work_order_lookup", '
-        '"arguments": {"work_order_id": "WO-123"}}'
+def test_decision_from_work_order_lookup_output():
+    decision = decision_from_routing_output(
+        RoutingOutput(
+            action=AgentAction.USE_TOOL,
+            tool_name="work_order_lookup",
+            arguments={"work_order_id": "WO-123"},
+        )
     )
 
     assert decision.action == AgentAction.USE_TOOL
@@ -79,26 +105,14 @@ def test_parse_work_order_lookup_decision():
     assert decision.arguments == {"work_order_id": "WO-123"}
 
 
-def test_parse_accepts_fenced_json():
-    decision = parse_routing_decision(
-        '```json\n{"action": "direct"}\n```'
-    )
-
-    assert decision.action == AgentAction.DIRECT
-
-
-def test_parse_malformed_output_is_routing_error():
-    with pytest.raises(RoutingError, match="Malformed routing output") as exc:
-        parse_routing_decision("not json")
-
-    assert exc.value.failure_class == FailureClass.MODEL_ERROR
-    assert exc.value.decision is None
-
-
-def test_parse_rejects_unknown_tool():
+def test_decision_rejects_unknown_tool():
     with pytest.raises(RoutingError, match="Invalid tool selection") as exc:
-        parse_routing_decision(
-            '{"action": "use_tool", "tool_name": "billing_lookup", "arguments": {}}'
+        decision_from_routing_output(
+            RoutingOutput(
+                action=AgentAction.USE_TOOL,
+                tool_name="billing_lookup",
+                arguments={},
+            )
         )
 
     assert exc.value.decision.action == AgentAction.USE_TOOL
@@ -106,11 +120,14 @@ def test_parse_rejects_unknown_tool():
     assert exc.value.decision.arguments == {}
 
 
-def test_parse_rejects_non_string_work_order_id():
+def test_decision_rejects_non_string_work_order_id():
     with pytest.raises(RoutingError, match="Invalid routing arguments") as exc:
-        parse_routing_decision(
-            '{"action": "use_tool", "tool_name": "work_order_lookup", '
-            '"arguments": {"work_order_id": 123}}'
+        decision_from_routing_output(
+            RoutingOutput(
+                action=AgentAction.USE_TOOL,
+                tool_name="work_order_lookup",
+                arguments={"work_order_id": 123},
+            )
         )
 
     assert exc.value.decision.arguments == {"work_order_id": 123}
@@ -150,6 +167,24 @@ def test_llm_router_direct_ignores_work_order_keywords():
     assert any(ROUTING_PROMPT_MARKER in prompt for prompt in llm.prompts)
 
 
+def test_llm_router_uses_typed_provider_decision():
+    llm = TypedRoutingLLM(RoutingOutput(action=AgentAction.DIRECT))
+    tool = _success_tool()
+    runtime = AsyncAgentRuntime(
+        llm,
+        router=LlmAgentRouter(llm),
+        tools={tool.name: tool},
+        verifier=ToolVerifier(),
+    )
+
+    result = asyncio.run(runtime.run("Check work order WO-123"))
+
+    assert result == "from llm"
+    assert tool.calls == []
+    assert llm.structured_prompts
+    assert ROUTING_PROMPT_MARKER in llm.structured_prompts[0]
+
+
 def test_llm_router_can_select_work_order_lookup():
     llm = RoutingFakeLLM(
         '{"action": "use_tool", "tool_name": "work_order_lookup", '
@@ -167,7 +202,9 @@ def test_llm_router_can_select_work_order_lookup():
 
     assert result == "Work order WO-123 is open (plumbing)."
     assert tool.calls == [{"work_order_id": "WO-123"}]
-    assert llm.prompts == [prompt for prompt in llm.prompts if ROUTING_PROMPT_MARKER in prompt]
+    assert llm.prompts == [
+        prompt for prompt in llm.prompts if ROUTING_PROMPT_MARKER in prompt
+    ]
 
 
 def test_malformed_llm_routing_is_model_error():
@@ -176,8 +213,8 @@ def test_malformed_llm_routing_is_model_error():
 
     try:
         asyncio.run(runtime.run("hello there"))
-        raise AssertionError("expected RoutingError")
-    except RoutingError as exc:
+        raise AssertionError("expected ModelError")
+    except ModelError as exc:
         assert exc.failure_class == FailureClass.MODEL_ERROR
         assert isinstance(exc.state, AgentState)
         assert exc.state.status == AgentStatus.FAILED
@@ -190,3 +227,31 @@ def test_malformed_llm_routing_is_model_error():
         trace = trace_from_state(exc.state)
         assert trace.outcome == "failure"
         assert trace.failure_class == FailureClass.MODEL_ERROR.value
+
+
+def test_schema_invalid_routing_is_model_error_not_routing_error():
+    llm = RoutingFakeLLM('{"action": "direct", "unexpected": true}')
+    runtime = AsyncAgentRuntime(llm, router=LlmAgentRouter(llm))
+
+    try:
+        asyncio.run(runtime.run("hello there"))
+        raise AssertionError("expected ModelError")
+    except ModelError as exc:
+        assert not isinstance(exc, RoutingError)
+        assert exc.failure_class == FailureClass.MODEL_ERROR
+        assert isinstance(exc.state, AgentState)
+        assert exc.state.decision is None
+
+
+def test_structured_provider_failure_is_model_error():
+    llm = FailingStructuredLLM()
+    runtime = AsyncAgentRuntime(llm, router=LlmAgentRouter(llm))
+
+    try:
+        asyncio.run(runtime.run("hello there"))
+        raise AssertionError("expected ModelError")
+    except ModelError as exc:
+        assert "provider down" in str(exc)
+        assert exc.failure_class == FailureClass.MODEL_ERROR
+        assert isinstance(exc.state, AgentState)
+        assert exc.state.decision is None

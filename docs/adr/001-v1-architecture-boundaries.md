@@ -15,7 +15,7 @@ V1 keeps the following boundaries:
 - **API** handles HTTP. `POST /chat` returns `{ "response" }` only. `GET /runs/{run_id}` returns a persisted trace. `GET /health` is liveness (no I/O). `GET /ready` is `SELECT 1`.
 - **Startup** validates settings (`LLM_PROVIDER`, `ROUTER_MODE`, timeout, OpenAI key when required) before `init_db` and `init_runtime`.
 - **AsyncAgentRuntime** owns orchestration: `Router` → context assembly (routing vs answer vs trusted scope) → DIRECT or tool execution → observation → domain-aware verification → recovery → `ExecutionTrace`. `build_runtime()` selects `AgentRouter` or `LlmAgentRouter` from `ROUTER_MODE` (default `keyword`). An explicit `router=` argument still overrides config.
-- **LLM providers** implement `AsyncLLMClient`. The API does not import vendor clients.
+- **LLM providers** implement `AsyncLLMClient` (`generate` for free text, `generate_structured` for typed schema output). JSON/schema parse lives in the provider layer. The API does not import vendor clients. The router validates allowed tools and domain arguments after the schema is valid.
 - **Persistence** uses async SQLAlchemy. `POST /chat` writes chat and trace in one transaction (`save_chat_and_trace`). `get_trace` serves `/runs`. Router type and routing latency are log/trace fields, not database columns.
 - **Evaluation** uses the same `build_runtime` wiring with a fake LLM. Routing comparison scores action, tool, arguments, and failure class for keyword vs LLM on the same messages.
 

@@ -2,7 +2,7 @@
 
 A FastAPI service that runs an async LLM agent with explicit routing, tool use, verification, and durable execution traces.
 
-API → `AsyncAgentRuntime` → `AsyncLLMClient` → SQLite.
+API → `AsyncAgentRuntime` → `AsyncLLMClient` (`generate` / `generate_structured`) → SQLite.
 
 This is **Agent Core v1**: a real control loop, not a chat wrapper. The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
 

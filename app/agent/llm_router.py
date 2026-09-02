@@ -1,13 +1,11 @@
 import asyncio
-import json
 from typing import Any
-
-from pydantic import ValidationError
 
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
 from app.agent.schemas import RoutingOutput
 from app.infra.errors import AgentFailure, ModelError, ModelTimeout, RoutingError
 from app.llm.async_base import AsyncLLMClient
+from app.llm.structured import generate_structured_from
 from app.tools.work_order import WorkOrderLookupRequest
 
 ALLOWED_ROUTE_TOOLS = frozenset({"work_order_lookup"})
@@ -29,16 +27,12 @@ def build_routing_prompt(message: str, allowed_tools: frozenset[str]) -> str:
     )
 
 
-def parse_routing_decision(
-    text: str,
+def decision_from_routing_output(
+    parsed: RoutingOutput,
     allowed_tools: frozenset[str] | None = None,
 ) -> AgentDecision:
+    """Map a schema-valid RoutingOutput into a domain AgentDecision."""
     allowed = allowed_tools if allowed_tools is not None else ALLOWED_ROUTE_TOOLS
-    try:
-        payload = json.loads(_extract_json_object(text))
-        parsed = RoutingOutput.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as e:
-        raise RoutingError("Malformed routing output") from e
 
     if parsed.action == AgentAction.DIRECT:
         if parsed.tool_name is not None or (
@@ -62,15 +56,6 @@ def parse_routing_decision(
         tool_name=parsed.tool_name,
         arguments=_validate_tool_arguments(parsed.tool_name, parsed.arguments),
     )
-
-
-def _extract_json_object(text: str) -> str:
-    stripped = text.strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("routing output is not a JSON object")
-    return stripped[start : end + 1]
 
 
 def _validate_tool_arguments(
@@ -111,7 +96,7 @@ def _validate_work_order_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 class LlmAgentRouter:
-    """LLM-backed router. Requests JSON and validates it before returning a decision."""
+    """LLM-backed router. Requests a typed RoutingOutput from the provider."""
 
     router_type = "llm"
 
@@ -131,7 +116,9 @@ class LlmAgentRouter:
         prompt = build_routing_prompt(request.message, self.allowed_tools)
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                raw = await self.llm.generate(prompt)
+                parsed = await generate_structured_from(
+                    self.llm, prompt, RoutingOutput
+                )
         except asyncio.CancelledError:
             raise
         except TimeoutError as e:
@@ -140,4 +127,4 @@ class LlmAgentRouter:
             raise
         except Exception as e:
             raise ModelError(str(e)) from e
-        return parse_routing_decision(raw, self.allowed_tools)
+        return decision_from_routing_output(parsed, self.allowed_tools)

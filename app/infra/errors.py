@@ -42,7 +42,7 @@ class ModelError(AgentFailure):
 
 
 class RoutingError(ModelError):
-    """Malformed or invalid structured routing output."""
+    """Domain-invalid routing after the provider returned schema-valid output."""
 
     def __init__(
         self,

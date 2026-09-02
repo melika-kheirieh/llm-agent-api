@@ -33,6 +33,7 @@ validate_startup() → init_db() → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
   → Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
+       LlmAgentRouter → AsyncLLMClient.generate_structured
        DIRECT  → AsyncLLMClient.generate
        USE_TOOL → AgentTool.execute
                 → Observation
@@ -48,7 +49,7 @@ save_chat_and_trace()  — one AsyncSession, one commit
 
 * The API layer is provider-agnostic
 * `AsyncAgentRuntime` is the execution source of truth
-* LLM providers implement `AsyncLLMClient`
+* LLM providers implement `AsyncLLMClient` (`generate` and `generate_structured`)
 * Persistence is isolated behind the repository (`save_chat_and_trace`, `get_trace`)
 
 ---
@@ -69,8 +70,9 @@ If that transaction fails, neither row is committed and the API returns `503`.
 Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
 attempts, recovery, outcome, events) against the same loop. Default cases use the
 keyword router; LLM-routing cases inject `LlmAgentRouter` and a fake that returns
-JSON. A separate comparison suite runs the same messages through both strategies
-and scores action, tool, arguments, and failure class — not answer text.
+JSON text (or implements `generate_structured`). A separate comparison suite runs
+the same messages through both strategies and scores action, tool, arguments, and
+failure class — not answer text.
 
 ---
 
@@ -78,7 +80,8 @@ and scores action, tool, arguments, and failure class — not answer text.
 
 The live runtime is explicit, not a hidden graph:
 
-* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` requests JSON, validates action/tool/arguments, and classifies unusable output as `model_error`. It is not an LLM planner for the rest of the loop.
+* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` asks the provider for a typed `RoutingOutput`, then checks allowed tools and domain arguments. It is not an LLM planner for the rest of the loop.
+* **Structured output** — `AsyncLLMClient.generate_structured(prompt, schema)` returns a Pydantic instance. JSON parse and schema validation live in the provider layer (`app/llm/structured.py`). Callers do not `json.loads` model text.
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
 * **Observation** — tool outcome attached to `AgentState`
 * **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
@@ -146,7 +149,11 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around **model** and **tool** calls separately, and propagate `CancelledError` without wrapping it as a model failure. Persistence runs after the agent returns and is not covered by those timeouts. The alternative (one timeout around the whole run) made tool hangs look like LLM failures.
 
-**Why deterministic routing by default?** V1 production and eval still use keyword matching so the first boundary stays cheap and reproducible: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. `ROUTER_MODE=llm` selects `LlmAgentRouter` at process start without changing the HTTP contract. It is not function-calling or a multi-agent planner. LLM routing adds a model call before DIRECT/tool work; `routing_ms` on logs makes that extra latency visible without a metrics vendor.
+**Why deterministic routing by default?** V1 production and eval still use keyword matching so the first boundary stays cheap and reproducible: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. `ROUTER_MODE=llm` selects `LlmAgentRouter` at process start without changing the HTTP contract. It is not function-calling or a multi-agent planner. LLM routing adds a structured model call before DIRECT/tool work; `routing_ms` on logs makes that extra latency visible without a metrics vendor.
+
+**Why structured output at the provider boundary?** JSON parsing and Pydantic schema checks are model-output problems: the vendor may emit fenced text, invalid JSON, or extra fields. `generate_structured` owns that path so every caller gets a typed object or a `model_error`. The router still owns **routing** validation: allowed tools and domain argument rules (for example `work_order_id` must be a non-empty string). Schema-invalid output never becomes an `AgentDecision`. Domain-invalid output can carry a partial decision and is still classified as `model_error` today (`RoutingError` subclasses `ModelError`).
+
+OpenAI tries native JSON-object formatting, then falls back to `generate()` plus parse if that request fails or returns empty text. Ollama sends `format=json` and falls back the same way on provider `ModelError` (HTTP/empty), not on parse failure. Timeouts and cancellation never fall back. Plain `generate()` is unchanged. Duck-typed fakes that only implement `generate()` still work through `generate_structured_from`.
 
 **Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a domain gate (required fields, requested-id match, allowed status) so unverified output cannot be returned as if it were. It is **not** a second model.
 

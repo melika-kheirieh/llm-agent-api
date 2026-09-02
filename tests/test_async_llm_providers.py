@@ -4,9 +4,17 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from app.infra.errors import ModelTimeout, UpstreamLLMError
+from pydantic import BaseModel, ConfigDict
+
+from app.infra.errors import ModelError, ModelTimeout, UpstreamLLMError
 from app.llm.ollama import OllamaClient
 from app.llm.openai import OpenAIClient
+
+
+class _NameSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
 
 
 def _run(coro):
@@ -157,3 +165,127 @@ def test_ollama_aclose_closes_httpx_client(mocker):
     _run(client.aclose())
 
     mock_client.aclose.assert_awaited_once()
+
+
+def test_openai_generate_structured_success(mocker):
+    mock_resp = MagicMock()
+    mock_resp.output_text = '{"name": "wo"}'
+
+    mock_client = MagicMock()
+    mock_client.responses.create = AsyncMock(return_value=mock_resp)
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test", model="gpt-4o-mini")
+    parsed = _run(client.generate_structured("hi", _NameSchema))
+
+    assert parsed.name == "wo"
+    mock_client.responses.create.assert_awaited_once_with(
+        model="gpt-4o-mini",
+        input="hi",
+        text={"format": {"type": "json_object"}},
+    )
+
+
+def test_openai_generate_structured_falls_back_when_native_unsupported(mocker):
+    fallback = MagicMock()
+    fallback.output_text = '{"name": "plain"}'
+
+    mock_client = MagicMock()
+    mock_client.responses.create = AsyncMock(
+        side_effect=[RuntimeError("json_object unsupported"), fallback]
+    )
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test", model="gpt-4o-mini")
+    parsed = _run(client.generate_structured("hi", _NameSchema))
+
+    assert parsed.name == "plain"
+    assert mock_client.responses.create.await_count == 2
+    mock_client.responses.create.assert_awaited_with(
+        model="gpt-4o-mini",
+        input="hi",
+    )
+
+
+def test_openai_generate_structured_malformed_native_output(mocker):
+    mock_resp = MagicMock()
+    mock_resp.output_text = "not json"
+
+    mock_client = MagicMock()
+    mock_client.responses.create = AsyncMock(return_value=mock_resp)
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test")
+
+    with pytest.raises(ModelError, match="Malformed structured output"):
+        _run(client.generate_structured("hi", _NameSchema))
+    mock_client.responses.create.assert_awaited_once()
+
+
+def test_openai_generate_structured_timeout_does_not_fallback(mocker):
+    mock_client = MagicMock()
+    mock_client.responses.create = AsyncMock(side_effect=TimeoutError("timed out"))
+    mocker.patch("app.llm.openai.AsyncOpenAI", return_value=mock_client)
+
+    client = OpenAIClient(api_key="sk-test")
+
+    with pytest.raises(ModelTimeout, match="timed out"):
+        _run(client.generate_structured("hi", _NameSchema))
+    mock_client.responses.create.assert_awaited_once()
+
+
+def test_ollama_generate_structured_success(mocker):
+    response = MagicMock()
+    response.json.return_value = {"response": '{"name": "wo"}'}
+    response.raise_for_status = MagicMock()
+    mock_client = _mock_httpx_client(mocker, post_return=response)
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+    parsed = _run(client.generate_structured("hi", _NameSchema))
+
+    assert parsed.name == "wo"
+    mock_client.post.assert_awaited_once_with(
+        "http://localhost:11434/api/generate",
+        json={
+            "model": "gemma",
+            "prompt": "hi",
+            "stream": False,
+            "format": "json",
+        },
+    )
+
+
+def test_ollama_generate_structured_falls_back_on_http_error(mocker):
+    fallback = MagicMock()
+    fallback.json.return_value = {"response": '{"name": "plain"}'}
+    fallback.raise_for_status = MagicMock()
+    mock_client = _mock_httpx_client(
+        mocker,
+        post_side_effect=[
+            httpx.ConnectError("connection refused"),
+            fallback,
+        ],
+    )
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+    parsed = _run(client.generate_structured("hi", _NameSchema))
+
+    assert parsed.name == "plain"
+    assert mock_client.post.await_count == 2
+    mock_client.post.assert_awaited_with(
+        "http://localhost:11434/api/generate",
+        json={"model": "gemma", "prompt": "hi", "stream": False},
+    )
+
+
+def test_ollama_generate_structured_malformed_json_does_not_fallback(mocker):
+    response = MagicMock()
+    response.json.return_value = {"response": "not json"}
+    response.raise_for_status = MagicMock()
+    mock_client = _mock_httpx_client(mocker, post_return=response)
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+
+    with pytest.raises(ModelError, match="Malformed structured output"):
+        _run(client.generate_structured("hi", _NameSchema))
+    mock_client.post.assert_awaited_once()
