@@ -2,9 +2,9 @@
 
 A FastAPI service that runs an async LLM agent with explicit routing, tool use, verification, and durable execution traces.
 
-API → `AsyncAgentRuntime` → `AsyncLLMClient` (`generate` / `generate_structured`) → SQLite.
+API → `AsyncAgentRuntime` → LangGraph transitions → existing router / tools / verifier / recovery → `AsyncLLMClient` → SQLite.
 
-This is **Agent Core v1**: a real control loop, not a chat wrapper. The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
+This is **Agent Core v1**: a real control loop, not a chat wrapper. LangGraph owns **node transitions only**. Routers, tools, verification, and recovery are unchanged. The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
 
 Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
 
@@ -22,9 +22,8 @@ FastAPI
   GET  /ready         → database SELECT 1
   ↓
 AsyncAgentRuntime
-  → Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
-  → tool + Observation + ToolVerifier
-  → RecoveryPolicy (max 2 attempts)
+  → LangGraph (route → answer | tool → verify → answer | recovery)
+       Router / AgentTool / ToolVerifier / RecoveryPolicy
   → ExecutionTrace
   ↓
 AsyncLLMClient (Ollama / OpenAI)
@@ -107,7 +106,8 @@ Deferred on purpose (docs only, no placeholder modules):
 - checkpoints
 - specialists and `DELEGATE`
 - distributed workers / RabbitMQ
-- RAG / LangChain / LangGraph
+- RAG / LangChain chains / embeddings / vector databases
+- LangGraph checkpoints, multi-agent workflows, or durable graph memory
 - authentication / streaming / UI
 
 Rationale is in [Design Decisions](docs/DESIGN.md#design-decisions).

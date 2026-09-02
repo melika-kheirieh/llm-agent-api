@@ -32,13 +32,11 @@ FastAPI
 validate_startup() → init_db() → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
-  → Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
+  → LangGraph transitions (route_node → answer_node | tool_node → verify_node → answer_node | recovery_node)
+       Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
        LlmAgentRouter → AsyncLLMClient.generate_structured
-       DIRECT  → AsyncLLMClient.generate
-       USE_TOOL → AgentTool.execute
-                → Observation
-                → ToolVerifier
-                → RecoveryPolicy (retry or review)
+       DIRECT  → AsyncLLMClient.generate (answer_node)
+       USE_TOOL → AgentTool.execute → Observation → ToolVerifier → RecoveryPolicy
   → ExecutionTrace
   ↓
 save_chat_and_trace()  — one AsyncSession, one commit
@@ -48,7 +46,8 @@ save_chat_and_trace()  — one AsyncSession, one commit
 **Key properties**
 
 * The API layer is provider-agnostic
-* `AsyncAgentRuntime` is the execution source of truth
+* `AsyncAgentRuntime` is the execution boundary HTTP and evaluation still call
+* LangGraph owns **transitions only**; nodes wrap Router, tools, ToolVerifier, RecoveryPolicy, and answer generation
 * LLM providers implement `AsyncLLMClient` (`generate` and `generate_structured`)
 * Persistence is isolated behind the repository (`save_chat_and_trace`, `get_trace`)
 
@@ -58,9 +57,9 @@ save_chat_and_trace()  — one AsyncSession, one commit
 
 1. Receive `message` via `POST /chat`
 2. Validate input (reject missing or empty message)
-3. `AsyncAgentRuntime` routes the request:
-   * **DIRECT** — generate an answer with the async LLM provider
-   * **USE_TOOL** — run `work_order_lookup`, record an observation, verify the result
+3. `AsyncAgentRuntime` runs the request on a compiled in-process graph:
+   * **DIRECT** — `route_node` → `answer_node` (async LLM provider)
+   * **USE_TOOL** — `tool_node` (`work_order_lookup`) → `verify_node` → `answer_node` or `recovery_node`
    * Unverified or exhausted retries return `"The request could not be verified."`
 4. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
 5. Return `{ "response" }` only
@@ -78,8 +77,9 @@ failure class — not answer text.
 
 ## Agent Core v1
 
-The live runtime is explicit, not a hidden graph:
+The live runtime is explicit. LangGraph selects the next node; it does not replace the components:
 
+* **Graph** — `app/agent/graph.py`. `GraphState` wraps `AgentState`. No checkpointer, no multi-agent graph, no RAG.
 * **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` asks the provider for a typed `RoutingOutput`, then checks allowed tools and domain arguments. It is not an LLM planner for the rest of the loop.
 * **Structured output** — `AsyncLLMClient.generate_structured(prompt, schema)` returns a Pydantic instance. JSON parse and schema validation live in the provider layer (`app/llm/structured.py`). Callers do not `json.loads` model text.
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
@@ -161,7 +161,9 @@ OpenAI tries native JSON-object formatting, then falls back to `generate()` plus
 
 **Why persist execution traces?** Logs explain a single process. `agent_runs` makes `run_id`, decision, tool, verification, attempts, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat and trace share one transaction so a persist failure cannot leave a chat row without a run.
 
-**Why no persistent memory / RAG / LangGraph / multi-agent?** Those layers are real products, not prerequisites for a correct control loop. This runtime keeps an in-process, bounded thread buffer for optional previous turns. It is not durable memory, retrieval, or a second agent. LangGraph would hide the loop this repo is meant to show. Specialists and `DELEGATE` are future routing actions, not stubs in the tree. Workers/RabbitMQ are a different execution topology on top of this in-process runtime.
+**Why LangGraph only for transitions?** The control loop was already correct as an explicit `AsyncAgentRuntime` method chain. Moving **edges** into LangGraph makes route / tool / verify / recover / answer paths visible as a graph without copying that logic into nodes. Nodes call the existing steps. There is no checkpointer, no multi-agent graph, and no LangChain chain. Tracing still uses `TraceEvent` on `AgentState`; it does not depend on LangGraph internals.
+
+**Why no persistent memory / RAG / multi-agent?** Those layers are real products, not prerequisites for a correct control loop. This runtime keeps an in-process, bounded thread buffer for optional previous turns. It is not durable memory, retrieval, or a second agent. Specialists and `DELEGATE` are future routing actions, not stubs in the tree. Workers/RabbitMQ are a different execution topology on top of this in-process runtime.
 
 ---
 
@@ -174,7 +176,8 @@ Deferred (documentation only; no placeholder modules):
 * Specialists and `DELEGATE`
 * Distributed workers / RabbitMQ
 * RAG or vector databases
-* LangChain / LangGraph
+* LangChain chains, embeddings, or retrieval
+* LangGraph checkpoints, multi-agent workflows, or durable graph memory
 * Authentication, streaming, UI
 
 ---

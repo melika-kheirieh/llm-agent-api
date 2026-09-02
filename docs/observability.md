@@ -45,4 +45,4 @@ No separate metrics collector or tracing vendor is wired.
 
 ## Design Notes
 
-Observability stays framework-agnostic. External monitoring can be added later without changing the agent loop.
+Observability stays framework-agnostic. Step events are recorded on `AgentState` the same way as before the LangGraph migration. Tracing does not depend on LangGraph internals. External monitoring can be added later without changing the agent loop.

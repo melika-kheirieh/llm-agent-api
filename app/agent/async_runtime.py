@@ -9,7 +9,8 @@ from app.agent.context import (
     TrustedScope,
     render_answer_prompt,
 )
-from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
+from app.agent.contracts import AgentAction, AgentRequest
+from app.agent.graph import compile_agent_graph
 from app.agent.observation import Observation
 from app.agent.recovery import RecoveryAction, RecoveryPolicy
 from app.agent.router import AgentRouter, Router
@@ -32,7 +33,12 @@ _REVIEW_RESPONSE = "The request could not be verified."
 
 
 class AsyncAgentRuntime:
-    """Async execution boundary for the chat agent pipeline."""
+    """Async execution boundary for the chat agent pipeline.
+
+    HTTP and evaluation still call this class. LangGraph owns node
+    transitions behind `_execute`; routers, tools, verification, and
+    recovery stay in their existing components.
+    """
 
     def __init__(
         self,
@@ -60,6 +66,7 @@ class AsyncAgentRuntime:
         self.recovery = recovery or RecoveryPolicy(max_attempts=2)
         self.context_policy = context_policy or ContextPolicy()
         self._history = ThreadHistoryBuffer()
+        self._graph = compile_agent_graph(self)
 
     def analyze(self, message: str) -> Analysis:
         return Analysis(language="auto", tone="neutral", task_type="qa")
@@ -153,6 +160,34 @@ class AsyncAgentRuntime:
         history: tuple[HistoryTurn, ...] | None = None,
         trusted_scope: TrustedScope | None = None,
     ) -> tuple[str, AgentState]:
+        request_ctx, state = self._start_state(
+            message,
+            thread_id=thread_id,
+            history=history,
+            trusted_scope=trusted_scope,
+        )
+        result = await self._graph.ainvoke(
+            {
+                "agent": state,
+                "request_ctx": request_ctx,
+                "response": None,
+                "pending_error": None,
+                "attempt_class": None,
+            }
+        )
+        pending = result.get("pending_error")
+        if pending is not None:
+            raise pending
+        return result["response"], result["agent"]
+
+    def _start_state(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        history: tuple[HistoryTurn, ...] | None = None,
+        trusted_scope: TrustedScope | None = None,
+    ) -> tuple[RequestContext, AgentState]:
         scope = trusted_scope or TrustedScope()
         prior = self._history.turns(thread_id) if history is None else history
         request_ctx = RequestContext(
@@ -171,8 +206,14 @@ class AsyncAgentRuntime:
             router_type=router_type,
         )
         state = state.record(TraceEventName.RUN_STARTED, router_type=router_type)
+        return request_ctx, state
+
+    async def _route_step(
+        self, state: AgentState
+    ) -> tuple[AgentState, AgentFailure | None, str | None]:
+        router_type = getattr(self.router, "router_type", None)
         try:
-            decision = await self.router.route(request)
+            decision = await self.router.route(state.request)
         except AgentFailure as exc:
             decision = getattr(exc, "decision", None)
             if decision is not None:
@@ -194,7 +235,7 @@ class AsyncAgentRuntime:
                 failure_class=exc.failure_class.value,
             )
             exc.state = state
-            raise
+            return state, exc, None
         state = replace(state, decision=decision)
         state = state.record(
             TraceEventName.ROUTE_SELECTED,
@@ -202,36 +243,8 @@ class AsyncAgentRuntime:
             tool_name=decision.tool_name,
             router_type=router_type,
         )
-
-        if decision.action == AgentAction.DIRECT:
-            analysis = self.analyze(message)
-            try:
-                answer = await self._respond_from_context(
-                    self.context_policy.for_answer(agent_ctx),
-                    analysis,
-                )
-            except AgentFailure as exc:
-                state = state.record(
-                    TraceEventName.RUN_FAILED,
-                    status=AgentStatus.FAILED.value,
-                    failure_class=exc.failure_class.value,
-                )
-                exc.state = replace(
-                    state,
-                    status=AgentStatus.FAILED,
-                    failure_class=exc.failure_class,
-                )
-                raise
-            state = replace(state, status=AgentStatus.COMPLETED)
-            state = state.record(
-                TraceEventName.RUN_COMPLETED,
-                status=AgentStatus.COMPLETED.value,
-            )
-            return answer, state
-
-        if decision.action == AgentAction.USE_TOOL:
-            return await self._run_tool(state, decision, request_ctx)
-
+        if decision.action in (AgentAction.DIRECT, AgentAction.USE_TOOL):
+            return state, None, None
         state = replace(
             state,
             status=AgentStatus.NEEDS_HUMAN_REVIEW,
@@ -242,14 +255,12 @@ class AsyncAgentRuntime:
             status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
             failure_class=FailureClass.UNKNOWN.value,
         )
-        return _REVIEW_RESPONSE, state
+        return state, None, _REVIEW_RESPONSE
 
-    async def _run_tool(
-        self,
-        state: AgentState,
-        decision: AgentDecision,
-        request_ctx: RequestContext,
-    ) -> tuple[str, AgentState]:
+    async def _tool_step(
+        self, state: AgentState
+    ) -> tuple[AgentState, FailureClass | None, str | None]:
+        decision = state.decision
         tool = self.tools.get(decision.tool_name or "")
         if tool is None:
             state = replace(
@@ -262,118 +273,165 @@ class AsyncAgentRuntime:
                 status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
                 failure_class=FailureClass.TOOL_ERROR.value,
             )
-            return _REVIEW_RESPONSE, state
+            return state, None, _REVIEW_RESPONSE
 
-        while True:
-            arguments = decision.arguments or {}
-            attempt = state.attempts + 1
-            attempt_class: FailureClass | None = None
+        arguments = decision.arguments or {}
+        attempt = state.attempts + 1
+        attempt_class: FailureClass | None = None
+        state = state.record(
+            TraceEventName.TOOL_STARTED,
+            tool_name=tool.name,
+            attempt=attempt,
+        )
+        try:
+            async with asyncio.timeout(self.tool_timeout_seconds):
+                result = await tool.execute(arguments)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            result = ToolResult(
+                success=False,
+                data={"error": "tool_timeout"},
+                retryable=True,
+            )
+            attempt_class = FailureClass.TOOL_TIMEOUT
+        except Exception:
+            result = ToolResult(
+                success=False,
+                data={"error": "tool_error"},
+                retryable=False,
+            )
+            attempt_class = FailureClass.TOOL_ERROR
+
+        if result.success:
             state = state.record(
-                TraceEventName.TOOL_STARTED,
+                TraceEventName.TOOL_COMPLETED,
                 tool_name=tool.name,
                 attempt=attempt,
             )
-            try:
-                async with asyncio.timeout(self.tool_timeout_seconds):
-                    result = await tool.execute(arguments)
-            except asyncio.CancelledError:
-                raise
-            except TimeoutError:
-                result = ToolResult(
-                    success=False,
-                    data={"error": "tool_timeout"},
-                    retryable=True,
-                )
-                attempt_class = FailureClass.TOOL_TIMEOUT
-            except Exception:
-                result = ToolResult(
-                    success=False,
-                    data={"error": "tool_error"},
-                    retryable=False,
-                )
-                attempt_class = FailureClass.TOOL_ERROR
-
-            if result.success:
-                state = state.record(
-                    TraceEventName.TOOL_COMPLETED,
-                    tool_name=tool.name,
-                    attempt=attempt,
-                )
-            else:
-                failed_class = (
-                    attempt_class.value
-                    if attempt_class is not None
-                    else FailureClass.TOOL_ERROR.value
-                )
-                state = state.record(
-                    TraceEventName.TOOL_FAILED,
-                    tool_name=tool.name,
-                    attempt=attempt,
-                    failure_class=failed_class,
-                )
-
-            observation = Observation(
+        else:
+            failed_class = (
+                attempt_class.value
+                if attempt_class is not None
+                else FailureClass.TOOL_ERROR.value
+            )
+            state = state.record(
+                TraceEventName.TOOL_FAILED,
                 tool_name=tool.name,
-                success=result.success,
-                data=result.data,
+                attempt=attempt,
+                failure_class=failed_class,
             )
-            observations = state.observations + (observation,)
-            verified = self.verifier.verify(result, arguments)
-            agent_ctx = self.context_policy.assemble(
-                request_ctx,
-                observations=observations,
-                verification_result=verified,
-                attempts=attempt,
-            )
-            state = state.record(
-                TraceEventName.VERIFICATION_COMPLETED,
-                verified=verified,
-            )
-            if verified:
-                failure_class = None
-            elif attempt_class is not None:
-                failure_class = attempt_class
-            elif not result.success:
-                failure_class = FailureClass.TOOL_ERROR
-            else:
-                failure_class = FailureClass.VERIFICATION_FAILURE
 
-            state = replace(
-                state,
-                attempts=attempt,
-                tool_result=result,
-                verification_result=verified,
-                observations=observations,
-                context=agent_ctx,
-                failure_class=failure_class,
-                status=(
-                    AgentStatus.COMPLETED if verified else AgentStatus.RUNNING
-                ),
-            )
-            if verified:
-                last = observation
-                state = state.record(
-                    TraceEventName.RUN_COMPLETED,
-                    status=AgentStatus.COMPLETED.value,
+        observation = Observation(
+            tool_name=tool.name,
+            success=result.success,
+            data=result.data,
+        )
+        state = replace(
+            state,
+            attempts=attempt,
+            tool_result=result,
+            observations=state.observations + (observation,),
+        )
+        return state, attempt_class, None
+
+    def _verify_step(
+        self,
+        state: AgentState,
+        request_ctx: RequestContext,
+        attempt_class: FailureClass | None,
+    ) -> AgentState:
+        decision = state.decision
+        arguments = decision.arguments or {}
+        result = state.tool_result
+        verified = self.verifier.verify(result, arguments)
+        agent_ctx = self.context_policy.assemble(
+            request_ctx,
+            observations=state.observations,
+            verification_result=verified,
+            attempts=state.attempts,
+        )
+        state = state.record(
+            TraceEventName.VERIFICATION_COMPLETED,
+            verified=verified,
+        )
+        if verified:
+            failure_class = None
+        elif attempt_class is not None:
+            failure_class = attempt_class
+        elif not result.success:
+            failure_class = FailureClass.TOOL_ERROR
+        else:
+            failure_class = FailureClass.VERIFICATION_FAILURE
+
+        return replace(
+            state,
+            verification_result=verified,
+            context=agent_ctx,
+            failure_class=failure_class,
+            status=(
+                AgentStatus.COMPLETED if verified else AgentStatus.RUNNING
+            ),
+        )
+
+    def _recovery_step(self, state: AgentState) -> tuple[AgentState, str | None]:
+        result = state.tool_result
+        retryable = bool(result.retryable) if result is not None else False
+        action = self.recovery.decide(state.attempts, retryable)
+        state = replace(state, recovery_decision=action)
+        state = state.record(
+            TraceEventName.RECOVERY_DECISION,
+            action=action.value,
+        )
+        if action == RecoveryAction.RETRY:
+            return state, None
+
+        failure_class = state.failure_class
+        state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+        state = state.record(
+            TraceEventName.RUN_FAILED,
+            status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            failure_class=failure_class.value if failure_class is not None else None,
+        )
+        return state, _REVIEW_RESPONSE
+
+    async def _answer_step(
+        self, state: AgentState
+    ) -> tuple[AgentState, str | None, AgentFailure | None]:
+        decision = state.decision
+        if decision is not None and decision.action == AgentAction.DIRECT:
+            analysis = self.analyze(state.request.message)
+            try:
+                answer = await self._respond_from_context(
+                    self.context_policy.for_answer(state.context),
+                    analysis,
                 )
-                return _format_tool_answer(last), state
-
-            action = self.recovery.decide(attempt, result.retryable)
-            state = replace(state, recovery_decision=action)
+            except AgentFailure as exc:
+                state = state.record(
+                    TraceEventName.RUN_FAILED,
+                    status=AgentStatus.FAILED.value,
+                    failure_class=exc.failure_class.value,
+                )
+                failed = replace(
+                    state,
+                    status=AgentStatus.FAILED,
+                    failure_class=exc.failure_class,
+                )
+                exc.state = failed
+                return failed, None, exc
+            state = replace(state, status=AgentStatus.COMPLETED)
             state = state.record(
-                TraceEventName.RECOVERY_DECISION,
-                action=action.value,
+                TraceEventName.RUN_COMPLETED,
+                status=AgentStatus.COMPLETED.value,
             )
-            if action == RecoveryAction.RETRY:
-                continue
+            return state, answer, None
 
-            state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
-            state = state.record(
-                TraceEventName.RUN_FAILED,
-                status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
-                failure_class=failure_class.value if failure_class is not None else None,
-            )
-            return _REVIEW_RESPONSE, state
+        last = state.observations[-1]
+        state = state.record(
+            TraceEventName.RUN_COMPLETED,
+            status=AgentStatus.COMPLETED.value,
+        )
+        return state, _format_tool_answer(last), None
 
     async def aclose(self) -> None:
         aclose = getattr(self.llm, "aclose", None)
