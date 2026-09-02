@@ -39,7 +39,7 @@ No `run_id` in the body. Chat and `ExecutionTrace` are persisted in **one transa
 | --- | --- |
 | 400 | Empty `message` |
 | 422 | Schema mismatch (e.g. missing `message`) |
-| 502 | Upstream LLM failure or run timeout |
+| 502 | Upstream model failure or model timeout |
 | 503 | Persistence failure (chat + trace unit) |
 | 500 | Unhandled internal error |
 

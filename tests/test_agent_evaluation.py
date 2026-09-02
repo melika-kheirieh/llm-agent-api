@@ -23,6 +23,8 @@ def test_default_cases_cover_required_trajectories():
         "malformed_tool_result",
         "wrong_tool_selection",
         "retry_exhaustion",
+        "model_timeout",
+        "tool_timeout",
     }
 
 
@@ -58,7 +60,7 @@ def test_evaluation_missing_work_order_id():
     assert result.actual.tool_arguments == {}
     assert result.actual.verification_result is False
     assert result.actual.recovery_decision == "fail"
-    assert result.actual.failure_class == "verification_failed"
+    assert result.actual.failure_class == "tool_error"
     assert result.actual.terminal_status == AgentStatus.NEEDS_HUMAN_REVIEW.value
     assert result.passed
 

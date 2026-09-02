@@ -85,7 +85,7 @@ curl -s http://127.0.0.1:8000/health
 curl -s http://127.0.0.1:8000/ready
 ```
 
-Empty `message` → **400**. Missing field → **422**. Unknown run → **404**. LLM failure → **502**. Database failure (including `/ready`) → **503**.
+Empty `message` → **400**. Missing field → **422**. Unknown run → **404**. Model failure or model timeout → **502**. Database failure (including `/ready`) → **503**. Tool timeout returns the review message (`200`), not `502`.
 
 ---
 

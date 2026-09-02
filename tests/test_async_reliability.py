@@ -7,7 +7,7 @@ import pytest
 
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import close_runtime, get_agent, init_runtime
-from app.infra.errors import UpstreamLLMError
+from app.infra.errors import ModelTimeout
 from app.main import app
 
 
@@ -39,10 +39,10 @@ class ForeverLLM:
         return None
 
 
-def test_runtime_timeout_maps_to_upstream_error():
+def test_runtime_timeout_maps_to_model_timeout():
     runtime = AsyncAgentRuntime(SlowLLM(delay=1.0), timeout_seconds=0.05)
 
-    with pytest.raises(UpstreamLLMError, match="timed out"):
+    with pytest.raises(ModelTimeout, match="timed out"):
         asyncio.run(runtime.run("hello"))
 
 
@@ -150,3 +150,62 @@ def test_chat_concurrent_requests_overlap(mocker):
     assert all(resp.status_code == 200 for resp in responses)
     assert {resp.json()["response"] for resp in responses} == {"echo: a", "echo: b"}
     assert elapsed < 0.35
+
+
+class _ValidWorkOrderTool:
+    name = "work_order_lookup"
+
+    def __init__(self, delay: float = 0.0):
+        self.delay = delay
+        self.calls = 0
+
+    async def execute(self, arguments: dict):
+        from app.agent.tools import ToolResult
+
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        return ToolResult(
+            success=True,
+            data={
+                "work_order_id": arguments.get("work_order_id", "WO-123"),
+                "status": "open",
+                "issue_type": "plumbing",
+            },
+        )
+
+
+def test_tool_timeout_is_not_model_timeout():
+    from app.infra.errors import FailureClass
+    from app.observability.trace import trace_from_state
+
+    tool = _ValidWorkOrderTool(delay=0.2)
+    runtime = AsyncAgentRuntime(
+        SlowLLM(delay=0),
+        model_timeout_seconds=5.0,
+        tool_timeout_seconds=0.05,
+        tools={tool.name: tool},
+    )
+
+    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    trace = trace_from_state(state)
+
+    assert answer == "The request could not be verified."
+    assert trace.failure_class == FailureClass.TOOL_TIMEOUT.value
+    assert trace.recovery_decision == "escalate"
+    assert trace.retry_count == 1
+    assert trace.attempts == 2
+
+
+def test_slow_tool_does_not_trip_model_timeout():
+    tool = _ValidWorkOrderTool(delay=0.2)
+    runtime = AsyncAgentRuntime(
+        SlowLLM(delay=0),
+        model_timeout_seconds=0.05,
+        tool_timeout_seconds=1.0,
+        tools={tool.name: tool},
+    )
+
+    answer = asyncio.run(runtime.run("Check work order WO-123"))
+
+    assert answer == "Work order WO-123 is open (plumbing)."
+    assert tool.calls == 1

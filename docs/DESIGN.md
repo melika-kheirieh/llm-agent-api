@@ -79,7 +79,9 @@ The live runtime is explicit, not a hidden graph:
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
 * **Observation** — tool outcome attached to `AgentState`
 * **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
-* **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures, then human review. `ESCALATE` and `FAIL` both surface as the same review message today
+* **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures (including tool timeouts), then human review. `ESCALATE` and `FAIL` both surface as the same review message today
+* **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
+* **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
 * **Traces** — `trace_from_state()` after each run; logged and persisted with the chat row
 * **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring
@@ -117,7 +119,8 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 * Client input error → `400`
 * Schema validation → `422`
 * Unknown `run_id` → `404`
-* Upstream LLM failure / timeout → `502`
+* Upstream model failure or model timeout → `502`
+* Tool timeout / tool error / verification failure → `200` with the review message; `failure_class` on the trace
 * Persistence failure (chat write, trace write, `/ready`) → `503`
 * Unexpected internal error → `500`
 * Invalid environment → process fails at startup
@@ -136,7 +139,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 ## Design Decisions
 
-**Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around a run, and propagate `CancelledError` without wrapping it as an LLM failure. The alternative (thread-per-request around sync HTTP) hid cancellation and timeout ownership.
+**Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around **model** and **tool** calls separately, and propagate `CancelledError` without wrapping it as a model failure. Persistence runs after the agent returns and is not covered by those timeouts. The alternative (one timeout around the whole run) made tool hangs look like LLM failures.
 
 **Why deterministic routing instead of an LLM planner?** V1 needs a testable, cheap first boundary: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM planner would add latency, cost, and non-determinism before the first tool exists. The router is **keyword matching**, not function-calling.
 

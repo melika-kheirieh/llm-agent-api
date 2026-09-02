@@ -8,9 +8,14 @@ from app.agent.recovery import RecoveryAction, RecoveryPolicy
 from app.agent.router import AgentRouter
 from app.agent.schemas import Analysis
 from app.agent.state import AgentState, AgentStatus
-from app.agent.tools import AgentTool
+from app.agent.tools import AgentTool, ToolResult
 from app.agent.verification import ToolVerifier
-from app.infra.errors import UpstreamLLMError
+from app.infra.errors import (
+    AgentFailure,
+    FailureClass,
+    ModelTimeout,
+    UnknownFailure,
+)
 from app.llm.async_base import AsyncLLMClient
 from app.observability.trace import ExecutionTrace, trace_from_state
 from app.tools.work_order import WorkOrderObservation
@@ -25,6 +30,8 @@ class AsyncAgentRuntime:
         self,
         llm: AsyncLLMClient,
         timeout_seconds: float = 60.0,
+        model_timeout_seconds: float | None = None,
+        tool_timeout_seconds: float | None = None,
         router: AgentRouter | None = None,
         tools: dict[str, AgentTool] | None = None,
         verifier: ToolVerifier | None = None,
@@ -33,6 +40,12 @@ class AsyncAgentRuntime:
     ):
         self.llm = llm
         self.timeout_seconds = timeout_seconds
+        self.model_timeout_seconds = (
+            timeout_seconds if model_timeout_seconds is None else model_timeout_seconds
+        )
+        self.tool_timeout_seconds = (
+            timeout_seconds if tool_timeout_seconds is None else tool_timeout_seconds
+        )
         self.router = router or AgentRouter()
         self.tools = tools or {}
         self.verifier = verifier or ToolVerifier()
@@ -44,7 +57,13 @@ class AsyncAgentRuntime:
 
     async def respond(self, message: str, analysis: Analysis) -> str:
         prompt = f"Answer clearly.\n\nUser: {message}"
-        return (await self.llm.generate(prompt)).strip()
+        try:
+            async with asyncio.timeout(self.model_timeout_seconds):
+                return (await self.llm.generate(prompt)).strip()
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError as e:
+            raise ModelTimeout("Model request timed out") from e
 
     async def run(self, message: str) -> str:
         answer, _state = await self.run_detailed(message)
@@ -56,10 +75,13 @@ class AsyncAgentRuntime:
 
     async def run_detailed(self, message: str) -> tuple[str, AgentState]:
         try:
-            async with asyncio.timeout(self.timeout_seconds):
-                return await self._execute(message)
-        except TimeoutError as e:
-            raise UpstreamLLMError("LLM request timed out") from e
+            return await self._execute(message)
+        except asyncio.CancelledError:
+            raise
+        except AgentFailure:
+            raise
+        except Exception as e:
+            raise UnknownFailure(str(e)) from e
 
     async def _execute(self, message: str) -> tuple[str, AgentState]:
         request = AgentRequest(message=message, metadata={})
@@ -69,14 +91,26 @@ class AsyncAgentRuntime:
 
         if decision.action == AgentAction.DIRECT:
             analysis = self.analyze(message)
-            answer = await self.respond(message, analysis)
+            try:
+                answer = await self.respond(message, analysis)
+            except AgentFailure as exc:
+                exc.state = replace(
+                    state,
+                    status=AgentStatus.FAILED,
+                    failure_class=exc.failure_class,
+                )
+                raise
             state = replace(state, status=AgentStatus.COMPLETED)
             return answer, state
 
         if decision.action == AgentAction.USE_TOOL:
             return await self._run_tool(state, decision)
 
-        state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+        state = replace(
+            state,
+            status=AgentStatus.NEEDS_HUMAN_REVIEW,
+            failure_class=FailureClass.UNKNOWN,
+        )
         return _REVIEW_RESPONSE, state
 
     async def _run_tool(
@@ -84,11 +118,37 @@ class AsyncAgentRuntime:
     ) -> tuple[str, AgentState]:
         tool = self.tools.get(decision.tool_name or "")
         if tool is None:
-            state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+            state = replace(
+                state,
+                status=AgentStatus.NEEDS_HUMAN_REVIEW,
+                failure_class=FailureClass.TOOL_ERROR,
+            )
             return _REVIEW_RESPONSE, state
 
         while True:
-            result = await tool.execute(decision.arguments or {})
+            arguments = decision.arguments or {}
+            attempt = state.attempts + 1
+            attempt_class: FailureClass | None = None
+            try:
+                async with asyncio.timeout(self.tool_timeout_seconds):
+                    result = await tool.execute(arguments)
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                result = ToolResult(
+                    success=False,
+                    data={"error": "tool_timeout"},
+                    retryable=True,
+                )
+                attempt_class = FailureClass.TOOL_TIMEOUT
+            except Exception:
+                result = ToolResult(
+                    success=False,
+                    data={"error": "tool_error"},
+                    retryable=False,
+                )
+                attempt_class = FailureClass.TOOL_ERROR
+
             observation = Observation(
                 tool_name=tool.name,
                 success=result.success,
@@ -97,14 +157,23 @@ class AsyncAgentRuntime:
             selected = self.context_policy.select(
                 [ContextItem(key="tool_observation", value=observation, source="tool")]
             )
-            verified = self.verifier.verify(result, decision.arguments or {})
-            attempts = state.attempts + 1
+            verified = self.verifier.verify(result, arguments)
+            if verified:
+                failure_class = None
+            elif attempt_class is not None:
+                failure_class = attempt_class
+            elif not result.success:
+                failure_class = FailureClass.TOOL_ERROR
+            else:
+                failure_class = FailureClass.VERIFICATION_FAILURE
+
             state = replace(
                 state,
-                attempts=attempts,
+                attempts=attempt,
                 tool_result=result,
                 verification_result=verified,
                 observations=state.observations + (observation,),
+                failure_class=failure_class,
                 status=(
                     AgentStatus.COMPLETED if verified else AgentStatus.RUNNING
                 ),
@@ -113,7 +182,7 @@ class AsyncAgentRuntime:
                 last = selected[-1].value if selected else observation
                 return _format_tool_answer(last), state
 
-            action = self.recovery.decide(attempts, result.retryable)
+            action = self.recovery.decide(attempt, result.retryable)
             state = replace(state, recovery_decision=action)
             if action == RecoveryAction.RETRY:
                 continue

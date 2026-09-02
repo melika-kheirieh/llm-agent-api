@@ -85,7 +85,7 @@ def test_verification_failure_trace_has_review_status():
     assert trace.attempts == 1
     assert trace.retry_count == 0
     assert trace.outcome == "needs_human_review"
-    assert trace.failure_class == "verification_failed"
+    assert trace.failure_class == "tool_error"
 
 
 def test_retry_path_reports_attempt_count():

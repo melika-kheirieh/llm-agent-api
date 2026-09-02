@@ -1,3 +1,5 @@
+import asyncio
+
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.agent.context import ContextPolicy
 from app.agent.contracts import AgentAction
@@ -10,6 +12,7 @@ from app.evaluation.agent_cases import EvaluationCase
 from app.evaluation.metrics import EvaluationResult
 from app.evaluation.trajectory import Trajectory
 from app.infra.config import settings
+from app.infra.errors import AgentFailure, DatabaseError
 from app.observability.trace import trace_from_state
 from app.tools.work_order import WorkOrderLookupTool
 
@@ -17,6 +20,12 @@ from app.tools.work_order import WorkOrderLookupTool
 class _EvaluationLLM:
     async def generate(self, prompt: str) -> str:
         return "direct evaluation answer"
+
+
+class _TimeoutLLM:
+    async def generate(self, prompt: str) -> str:
+        await asyncio.sleep(1.0)
+        return "unreachable"
 
 
 class ScriptedTool:
@@ -34,11 +43,45 @@ class ScriptedTool:
         return self._results[index]
 
 
+class DelayedScriptedTool(ScriptedTool):
+    def __init__(
+        self,
+        results: tuple[ToolResult, ...] | list[ToolResult],
+        delay_seconds: float,
+    ):
+        super().__init__(results)
+        self.delay_seconds = delay_seconds
+
+    async def execute(self, arguments: dict) -> ToolResult:
+        await asyncio.sleep(self.delay_seconds)
+        return await super().execute(arguments)
+
+
+def _llm_for_case(case: EvaluationCase):
+    if case.model_mode == "timeout":
+        return _TimeoutLLM()
+    return _EvaluationLLM()
+
+
 def _tools_for_case(case: EvaluationCase) -> dict[str, AgentTool] | None:
     if case.omit_tools:
         return {}
-    if case.tool_results is not None:
-        scripted = ScriptedTool(case.tool_results)
+    results = case.tool_results
+    if case.tool_delay_seconds is not None:
+        payload = results or (
+            ToolResult(
+                success=True,
+                data={
+                    "work_order_id": "WO-123",
+                    "status": "open",
+                    "issue_type": "plumbing",
+                },
+            ),
+        )
+        delayed = DelayedScriptedTool(payload, case.tool_delay_seconds)
+        return {delayed.name: delayed}
+    if results is not None:
+        scripted = ScriptedTool(results)
         return {scripted.name: scripted}
     return None
 
@@ -59,8 +102,10 @@ def _runtime_for_case(case: EvaluationCase) -> AsyncAgentRuntime:
         work_order = WorkOrderLookupTool()
         tools = {work_order.name: work_order}
     return AsyncAgentRuntime(
-        _EvaluationLLM(),
+        _llm_for_case(case),
         timeout_seconds=timeout,
+        model_timeout_seconds=case.model_timeout_seconds,
+        tool_timeout_seconds=case.tool_timeout_seconds,
         router=AgentRouter(),
         tools=tools,
         verifier=ToolVerifier(),
@@ -96,7 +141,14 @@ async def run_case(
     runtime: AsyncAgentRuntime | None = None,
 ) -> EvaluationResult:
     agent = runtime or _runtime_for_case(case)
-    _answer, state = await agent.run_detailed(case.message)
+    try:
+        _answer, state = await agent.run_detailed(case.message)
+    except DatabaseError:
+        raise
+    except AgentFailure as exc:
+        if not isinstance(exc.state, AgentState):
+            raise
+        state = exc.state
     return EvaluationResult(
         case_name=case.name,
         expected=case.expected,

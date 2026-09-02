@@ -4,6 +4,7 @@ from app.agent.contracts import AgentAction
 from app.agent.state import AgentStatus
 from app.agent.tools import ToolResult
 from app.evaluation.trajectory import Trajectory
+from app.infra.errors import FailureClass
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,10 @@ class EvaluationCase:
     expected: Trajectory
     tool_results: tuple[ToolResult, ...] | None = None
     omit_tools: bool = False
+    model_mode: str = "ok"
+    model_timeout_seconds: float | None = None
+    tool_timeout_seconds: float | None = None
+    tool_delay_seconds: float | None = None
 
 
 DEFAULT_CASES = [
@@ -54,7 +59,7 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={},
             verification_result=False,
-            failure_class="verification_failed",
+            failure_class=FailureClass.TOOL_ERROR.value,
             attempts=1,
             recovery_decision="fail",
             outcome="needs_human_review",
@@ -79,7 +84,7 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={"work_order_id": "WO-123"},
             verification_result=False,
-            failure_class="verification_failed",
+            failure_class=FailureClass.VERIFICATION_FAILURE.value,
             attempts=1,
             recovery_decision="fail",
             outcome="needs_human_review",
@@ -127,7 +132,7 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={"work_order_id": "WO-123"},
             verification_result=False,
-            failure_class="verification_failed",
+            failure_class=FailureClass.TOOL_ERROR.value,
             attempts=1,
             recovery_decision="fail",
             outcome="needs_human_review",
@@ -145,7 +150,7 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={"work_order_id": "WO-123"},
             verification_result=False,
-            failure_class="verification_failed",
+            failure_class=FailureClass.VERIFICATION_FAILURE.value,
             attempts=1,
             recovery_decision="fail",
             outcome="needs_human_review",
@@ -161,7 +166,7 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={"work_order_id": "WO-123"},
             verification_result=None,
-            failure_class="needs_review",
+            failure_class=FailureClass.TOOL_ERROR.value,
             attempts=0,
             recovery_decision=None,
             outcome="needs_human_review",
@@ -180,7 +185,41 @@ DEFAULT_CASES = [
             tool_name="work_order_lookup",
             tool_arguments={"work_order_id": "WO-123"},
             verification_result=False,
-            failure_class="verification_failed",
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=2,
+            recovery_decision="escalate",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+        ),
+    ),
+    EvaluationCase(
+        name="model_timeout",
+        message="hello there",
+        model_mode="timeout",
+        model_timeout_seconds=0.05,
+        expected=Trajectory(
+            action=AgentAction.DIRECT.value,
+            tool_name=None,
+            tool_arguments=None,
+            verification_result=None,
+            failure_class=FailureClass.MODEL_TIMEOUT.value,
+            attempts=0,
+            recovery_decision=None,
+            outcome="failure",
+            terminal_status=AgentStatus.FAILED.value,
+        ),
+    ),
+    EvaluationCase(
+        name="tool_timeout",
+        message="Check work order WO-123",
+        tool_delay_seconds=0.2,
+        tool_timeout_seconds=0.05,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-123"},
+            verification_result=False,
+            failure_class=FailureClass.TOOL_TIMEOUT.value,
             attempts=2,
             recovery_decision="escalate",
             outcome="needs_human_review",

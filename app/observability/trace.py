@@ -63,20 +63,16 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
 
     if state.status == AgentStatus.COMPLETED:
         outcome = "success"
-        failure_class = None
     elif state.status == AgentStatus.NEEDS_HUMAN_REVIEW:
         outcome = "needs_human_review"
-        failure_class = (
-            "verification_failed"
-            if state.verification_result is False
-            else "needs_review"
-        )
     elif state.status == AgentStatus.FAILED:
         outcome = "failure"
-        failure_class = "failed"
     else:
         outcome = state.status.value
-        failure_class = None
+
+    failure_class = None
+    if state.failure_class is not None:
+        failure_class = state.failure_class.value
 
     return ExecutionTrace(
         run_id=trace_id,

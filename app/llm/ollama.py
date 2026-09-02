@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from app.infra.errors import UpstreamLLMError
+from app.infra.errors import ModelError, ModelTimeout
 from app.llm.async_base import AsyncLLMClient
 
 
@@ -33,12 +33,14 @@ class OllamaClient(AsyncLLMClient):
             data = resp.json()
         except asyncio.CancelledError:
             raise
-        except (httpx.HTTPError, TimeoutError, ValueError) as e:
-            raise UpstreamLLMError(str(e)) from e
+        except (TimeoutError, httpx.TimeoutException) as e:
+            raise ModelTimeout(str(e)) from e
+        except (httpx.HTTPError, ValueError) as e:
+            raise ModelError(str(e)) from e
 
         text = data.get("response")
         if not isinstance(text, str) or not text.strip():
-            raise UpstreamLLMError("Empty response from Ollama")
+            raise ModelError("Empty response from Ollama")
         return text
 
     async def aclose(self) -> None:

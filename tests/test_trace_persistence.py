@@ -84,7 +84,7 @@ def test_review_failure_persists_trace():
     assert stored["decision"] == "use_tool"
     assert stored["verification_result"] == "false"
     assert stored["outcome"] == "needs_human_review"
-    assert stored["failure_class"] == "verification_failed"
+    assert stored["failure_class"] == "tool_error"
 
 
 def test_get_run_unknown_id_returns_404(client):
@@ -114,3 +114,4 @@ def test_get_run_returns_persisted_trace(client):
     assert data["terminal_status"] == "completed"
     assert data["decision"] == "direct"
     assert "response" not in data
+    assert "events" not in data

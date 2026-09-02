@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import get_agent
-from app.infra.errors import UpstreamLLMError, DatabaseError
+from app.infra.errors import DatabaseError, ModelError, ModelTimeout
 from app.db.repo import get_trace, ping_db, save_chat_and_trace
 import logging
 
@@ -39,12 +39,18 @@ async def chat(
 
         return {"response": response}
 
-    except UpstreamLLMError:
-        logger.warning("chat_llm_failure")
+    except (ModelTimeout, ModelError) as exc:
+        logger.warning(
+            "chat_llm_failure",
+            extra={"failure_class": exc.failure_class.value},
+        )
         raise HTTPException(status_code=502, detail="LLM failure")
 
-    except DatabaseError:
-        logger.error("chat_db_failure")
+    except DatabaseError as exc:
+        logger.error(
+            "chat_db_failure",
+            extra={"failure_class": exc.failure_class.value},
+        )
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
@@ -52,8 +58,11 @@ async def chat(
 async def get_run(run_id: str) -> dict:
     try:
         trace = await get_trace(run_id)
-    except DatabaseError:
-        logger.error("trace_db_failure")
+    except DatabaseError as exc:
+        logger.error(
+            "trace_db_failure",
+            extra={"failure_class": exc.failure_class.value},
+        )
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     if trace is None:
@@ -70,7 +79,10 @@ async def health() -> dict:
 async def ready() -> dict:
     try:
         await ping_db()
-    except DatabaseError:
-        logger.error("ready_db_failure")
+    except DatabaseError as exc:
+        logger.error(
+            "ready_db_failure",
+            extra={"failure_class": exc.failure_class.value},
+        )
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok"}

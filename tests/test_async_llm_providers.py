@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from app.infra.errors import UpstreamLLMError
+from app.infra.errors import ModelTimeout, UpstreamLLMError
 from app.llm.ollama import OllamaClient
 from app.llm.openai import OpenAIClient
 
@@ -89,6 +89,15 @@ def test_ollama_empty_response(mocker):
     client = OllamaClient(base_url="http://localhost:11434", model="gemma")
 
     with pytest.raises(UpstreamLLMError, match="Empty response from Ollama"):
+        _run(client.generate("hi"))
+
+
+def test_ollama_timeout_is_model_timeout(mocker):
+    _mock_httpx_client(mocker, post_side_effect=httpx.TimeoutException("timed out"))
+
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma")
+
+    with pytest.raises(ModelTimeout, match="timed out"):
         _run(client.generate("hi"))
 
 

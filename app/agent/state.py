@@ -4,6 +4,7 @@ from typing import Any
 
 from app.agent.observation import Observation
 from app.agent.recovery import RecoveryAction
+from app.infra.errors import FailureClass
 
 
 class AgentStatus(str, Enum):
@@ -23,4 +24,5 @@ class AgentState:
     attempts: int = 0
     observations: tuple[Observation, ...] = ()
     recovery_decision: RecoveryAction | None = None
+    failure_class: FailureClass | None = None
     status: AgentStatus = AgentStatus.CREATED

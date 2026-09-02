@@ -66,7 +66,7 @@ def test_invalid_verification_payload_trajectory():
 
     assert result.actual.verification_result is False
     assert result.actual.recovery_decision == "fail"
-    assert result.actual.failure_class == "verification_failed"
+    assert result.actual.failure_class == "verification_failure"
     assert result.passed
 
 
@@ -109,7 +109,7 @@ def test_wrong_tool_selection_trajectory():
     assert result.actual.verification_result is None
     assert result.actual.attempts == 0
     assert result.actual.recovery_decision is None
-    assert result.actual.failure_class == "needs_review"
+    assert result.actual.failure_class == "tool_error"
     assert result.passed
 
 
@@ -119,5 +119,27 @@ def test_retry_exhaustion_trajectory():
 
     assert result.actual.attempts == 2
     assert result.actual.recovery_decision == "escalate"
-    assert result.actual.failure_class == "verification_failed"
+    assert result.actual.failure_class == "tool_error"
+    assert result.passed
+
+
+def test_model_timeout_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "model_timeout")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "direct"
+    assert result.actual.failure_class == "model_timeout"
+    assert result.actual.terminal_status == "failed"
+    assert result.actual.outcome == "failure"
+    assert result.passed
+
+
+def test_tool_timeout_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "tool_timeout")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.failure_class == "tool_timeout"
+    assert result.actual.recovery_decision == "escalate"
+    assert result.actual.attempts == 2
+    assert result.actual.outcome == "needs_human_review"
     assert result.passed
