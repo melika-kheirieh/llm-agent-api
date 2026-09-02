@@ -1,8 +1,13 @@
 from pydantic import BaseModel
+import math
 import os
 from dotenv import load_dotenv
 
+from app.infra.errors import ConfigurationError
+
 load_dotenv()
+
+SUPPORTED_PROVIDERS = frozenset({"ollama", "openai"})
 
 
 class Settings(BaseModel):
@@ -18,8 +23,36 @@ class Settings(BaseModel):
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma")
 
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./app.db")
-    llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+    llm_timeout_seconds: float | str = os.getenv("LLM_TIMEOUT_SECONDS", "60")
 
+    def validate_startup(self) -> None:
+        """Fail fast on invalid settings. Safe to call more than once."""
+        provider = (self.llm_provider or "").strip().lower()
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ConfigurationError(
+                f"Unsupported LLM_PROVIDER: {self.llm_provider!r}. "
+                "Expected 'ollama' or 'openai'."
+            )
+        self.llm_provider = provider
+
+        try:
+            timeout = float(self.llm_timeout_seconds)
+        except (TypeError, ValueError) as e:
+            raise ConfigurationError(
+                "LLM_TIMEOUT_SECONDS must be a positive number, "
+                f"got {self.llm_timeout_seconds!r}."
+            ) from e
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ConfigurationError(
+                "LLM_TIMEOUT_SECONDS must be a positive number, "
+                f"got {self.llm_timeout_seconds!r}."
+            )
+        self.llm_timeout_seconds = timeout
+
+        if provider == "openai" and not (self.openai_api_key or "").strip():
+            raise ConfigurationError(
+                "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
+            )
 
 
 settings = Settings()

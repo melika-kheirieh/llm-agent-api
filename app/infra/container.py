@@ -12,8 +12,9 @@ _runtime: AsyncAgentRuntime | None = None
 
 
 def _build_llm() -> AsyncLLMClient:
-    provider = settings.llm_provider.lower().strip()
-    timeout_seconds = settings.llm_timeout_seconds
+    settings.validate_startup()
+    provider = settings.llm_provider
+    timeout_seconds = float(settings.llm_timeout_seconds)
 
     if provider == "ollama":
         from app.llm.ollama import OllamaClient
@@ -24,20 +25,14 @@ def _build_llm() -> AsyncLLMClient:
             timeout_seconds=timeout_seconds,
         )
 
-    if provider == "openai":
-        if not settings.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+    from app.llm.openai import OpenAIClient
 
-        from app.llm.openai import OpenAIClient
-
-        return OpenAIClient(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            base_url=settings.openai_base_url,
-            timeout_seconds=timeout_seconds,
-        )
-
-    raise ValueError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")
+    return OpenAIClient(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        base_url=settings.openai_base_url,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _build_tools() -> dict[str, AgentTool]:
@@ -52,7 +47,7 @@ def _build_runtime() -> AsyncAgentRuntime:
 def build_runtime(llm: AsyncLLMClient | None = None) -> AsyncAgentRuntime:
     return AsyncAgentRuntime(
         llm or _build_llm(),
-        timeout_seconds=settings.llm_timeout_seconds,
+        timeout_seconds=float(settings.llm_timeout_seconds),
         router=AgentRouter(),
         tools=_build_tools(),
         verifier=ToolVerifier(),
