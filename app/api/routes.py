@@ -27,7 +27,7 @@ async def chat(
 
     try:
         response = await agent.run(message)
-        save_chat(message, response)
+        await save_chat(message, response)
 
         logger.info(
             "chat_success",
