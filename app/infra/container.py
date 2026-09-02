@@ -1,8 +1,8 @@
-from app.agent.agent import Agent
+from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.config import settings
 
 
-def get_agent() -> Agent:
+def get_agent() -> AsyncAgentRuntime:
     provider = settings.llm_provider.lower().strip()
 
     if provider == "ollama":
@@ -12,7 +12,7 @@ def get_agent() -> Agent:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
         )
-        return Agent(llm)
+        return AsyncAgentRuntime(llm)
 
     if provider == "openai":
         if not settings.openai_api_key:
@@ -25,6 +25,6 @@ def get_agent() -> Agent:
             model=settings.openai_model,
             base_url=settings.openai_base_url,
         )
-        return Agent(llm)
+        return AsyncAgentRuntime(llm)
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")

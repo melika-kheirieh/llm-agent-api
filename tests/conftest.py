@@ -16,7 +16,7 @@ class FakeAgent:
     def __init__(self, mode="ok"):
         self.mode = mode
 
-    def run(self, message: str) -> str:
+    async def run(self, message: str) -> str:
         if self.mode == "ok":
             return f"echo: {message}"
         if self.mode == "llm_error":

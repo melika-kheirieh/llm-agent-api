@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from app.infra.errors import UpstreamLLMError
-from app.llm.base import LLMClient
+from app.llm.async_base import AsyncLLMClient
 
 
-class OpenAIClient(LLMClient):
+class OpenAIClient(AsyncLLMClient):
     def __init__(
         self,
         api_key: str,
@@ -14,15 +14,15 @@ class OpenAIClient(LLMClient):
         base_url: str | None = None,
     ):
         # base_url optional: OpenAI default if None
-        self.client = OpenAI(
+        self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
         )
         self.model = model
 
-    def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> str:
         try:
-            resp = self.client.responses.create(
+            resp = await self.client.responses.create(
                 model=self.model,
                 input=prompt,
             )

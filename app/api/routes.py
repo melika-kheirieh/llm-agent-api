@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from app.agent.agent import Agent
+from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import get_agent
 from app.infra.errors import UpstreamLLMError, DatabaseError
 from app.db.repo import save_chat
@@ -17,16 +17,16 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat")
-def chat(
+async def chat(
     payload: ChatRequest,
-    agent: Agent = Depends(get_agent),
+    agent: AsyncAgentRuntime = Depends(get_agent),
 ) -> dict:
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
     try:
-        response = agent.run(message)
+        response = await agent.run(message)
         save_chat(message, response)
 
         logger.info(

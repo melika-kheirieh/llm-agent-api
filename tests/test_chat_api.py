@@ -38,7 +38,7 @@ def test_chat_internal_error(client, mocker):
     from app.main import app
 
     class BrokeAgent:
-        def run(self, message: str):
+        async def run(self, message: str):
             raise RuntimeError("Boom")
 
     app.dependency_overrides[get_agent] = lambda: BrokeAgent()
