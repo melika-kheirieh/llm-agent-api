@@ -47,17 +47,21 @@ The body is the answer only. The router did not match work-order keywords, so `A
 
 ## 4) Tool path (scoped lookup)
 
+Demo scope headers are **not** authentication. Missing headers still fail closed. The message cannot create tenant or property.
+
 ```bash
-curl -s -X POST http://127.0.0.1:8000/chat \
+curl -sD - -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: tenant-a" \
+  -H "X-Property-Id: prop-1" \
   -d '{"message":"Check work order WO-123"}'
 ```
 
 ```json
-{"response": "The request could not be verified."}
+{"response": "Work order WO-123 is open (plumbing)."}
 ```
 
-`POST /chat` has no identity, so `TrustedScope` is empty and tool lookups fail closed. Tests and evaluation pass a backend tenant/property into `AsyncAgentRuntime`. `"policy"` routes to `maintenance_policy_lookup`; `"work order"` / `"maintenance"` route to `work_order_lookup`.
+Copy `X-Run-Id` from the response headers. `"policy"` routes to `maintenance_policy_lookup`; `"work order"` / `"maintenance"` route to `work_order_lookup`.
 
 Chat, run summary, and sanitized events are written in **one transaction**.
 
@@ -65,17 +69,13 @@ Chat, run summary, and sanitized events are written in **one transaction**.
 
 ## 5) Fetch the trace
 
-`run_id` is not in the chat JSON. After a successful `/chat`, it is on the `chat_success` log line and in `agent_runs` (SQLite locally):
-
-```bash
-sqlite3 app.db "SELECT run_id, decision, selected_tool, outcome FROM agent_runs ORDER BY created_at DESC LIMIT 1;"
-```
+`run_id` is not in the chat JSON. After a successful `/chat`, use `X-Run-Id`:
 
 ```bash
 curl -s http://127.0.0.1:8000/runs/{run_id}
 ```
 
-Unknown ids return **404**.
+Unknown ids return **404**. The id is also on the `chat_success` log line and in `agent_runs`.
 
 ---
 
@@ -90,7 +90,8 @@ pytest -q
 ## What this demo shows
 
 * `/health` vs `/ready`
-* Chat clients stay on `{ "response" }`
+* Chat clients stay on `{ "response" }`; operators use `X-Run-Id`
+* Scoped tools need demo `X-Tenant-Id` / `X-Property-Id` headers (not authentication)
 * DIRECT vs tool is an explicit runtime choice
 * Chat + trace + events persist together
 * The loop is testable without a provider

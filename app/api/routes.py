@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException, Depends
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from app.agent.async_runtime import AsyncAgentRuntime
+from app.api.scope import RUN_ID_HEADER, trusted_scope_from_headers
+from app.db.repo import get_trace, ping_db, save_chat_and_trace
 from app.infra.container import get_agent
 from app.infra.errors import DatabaseError, ModelError, ModelTimeout
-from app.db.repo import get_trace, ping_db, save_chat_and_trace
-import logging
 
 
 router = APIRouter()
@@ -19,15 +21,22 @@ class ChatRequest(BaseModel):
 @router.post("/chat")
 async def chat(
     payload: ChatRequest,
+    request: Request,
+    response: Response,
     agent: AsyncAgentRuntime = Depends(get_agent),
 ) -> dict:
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    trusted_scope = trusted_scope_from_headers(request.headers)
+
     try:
-        response, trace = await agent.run_with_trace(message)
-        await save_chat_and_trace(message, response, trace)
+        answer, trace = await agent.run_with_trace(
+            message,
+            trusted_scope=trusted_scope,
+        )
+        await save_chat_and_trace(message, answer, trace)
 
         logger.info(
             "chat_success",
@@ -37,7 +46,9 @@ async def chat(
             },
         )
 
-        return {"response": response}
+        if trace.run_id:
+            response.headers[RUN_ID_HEADER] = trace.run_id
+        return {"response": answer}
 
     except (ModelTimeout, ModelError) as exc:
         logger.warning(

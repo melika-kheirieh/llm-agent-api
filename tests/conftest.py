@@ -28,14 +28,14 @@ class FakeAgent:
     def __init__(self, mode="ok"):
         self.mode = mode
 
-    async def run(self, message: str) -> str:
+    async def run(self, message: str, **_kwargs) -> str:
         if self.mode == "ok":
             return f"echo: {message}"
         if self.mode == "llm_error":
             raise UpstreamLLMError("boom")
         raise RuntimeError("unexpected")
 
-    async def run_with_trace(self, message: str) -> tuple[str, ExecutionTrace]:
+    async def run_with_trace(self, message: str, **_kwargs) -> tuple[str, ExecutionTrace]:
         text = await self.run(message)
         return text, ExecutionTrace(
             run_id="test",

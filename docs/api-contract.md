@@ -1,6 +1,6 @@
 # API Contract
 
-HTTP response shapes. `POST /chat` remains `{ "response": string }` only.
+HTTP response shapes. `POST /chat` remains `{ "response": string }` only. `run_id` is not in the JSON body.
 
 Invalid **environment** (unsupported `LLM_PROVIDER`, unsupported `ROUTER_MODE`, non-positive `LLM_TIMEOUT_SECONDS`, missing `OPENAI_API_KEY` for OpenAI) fails **process startup** via `ConfigurationError`. That is not an HTTP status.
 
@@ -18,6 +18,17 @@ Invalid **environment** (unsupported `LLM_PROVIDER`, unsupported `ROUTER_MODE`, 
 }
 ```
 
+Optional demo scope headers (not authentication):
+
+| Header | Maps to |
+| --- | --- |
+| `X-Tenant-Id` | `TrustedScope.tenant_id` |
+| `X-Property-Id` | `TrustedScope.property_id` |
+
+The API copies these headers onto backend-owned `TrustedScope`. Blank or missing values stay empty. The JSON body, user message, and LLM output never create or override scope. Callers can send any values; this is **demo scope propagation**, not tenant authentication or an authorization framework.
+
+Scoped tools **fail closed** when tenant or property is missing, or when the catalog row is outside that scope. HTTP still returns **200** with the review message (`"The request could not be verified."`).
+
 ### Validation
 
 * `message` is **required** → missing field **422**
@@ -31,7 +42,13 @@ Invalid **environment** (unsupported `LLM_PROVIDER`, unsupported `ROUTER_MODE`, 
 }
 ```
 
-No `run_id` in the body. Chat, `agent_runs`, and sanitized `agent_run_events` are persisted in **one transaction** (`save_chat_and_trace`). If that write fails, no rows are committed.
+No `run_id` in the body. When a run was persisted, the response includes:
+
+```
+X-Run-Id: <run_id>
+```
+
+Use that header with `GET /runs/{run_id}`. Chat, `agent_runs`, and sanitized `agent_run_events` are persisted in **one transaction** (`save_chat_and_trace`). If that write fails, no rows are committed and `X-Run-Id` is not returned.
 
 ### Errors
 

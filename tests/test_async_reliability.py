@@ -113,11 +113,11 @@ def test_chat_concurrent_requests_overlap(mocker):
     mocker.patch("app.api.routes.save_chat_and_trace", new_callable=AsyncMock)
 
     class SlowAgent:
-        async def run(self, message: str) -> str:
+        async def run(self, message: str, **_kwargs) -> str:
             await asyncio.sleep(0.2)
             return f"echo: {message}"
 
-        async def run_with_trace(self, message: str):
+        async def run_with_trace(self, message: str, **_kwargs):
             from app.observability.trace import ExecutionTrace
 
             text = await self.run(message)

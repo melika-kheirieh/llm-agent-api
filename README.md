@@ -31,7 +31,7 @@ AsyncLLMClient (Ollama / OpenAI)
 SQLite or PostgreSQL (one transaction): chat_messages + agent_runs + agent_run_events
 ```
 
-Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id`. Chat, run summary, and sanitized events are written together; traces are read from `GET /runs/{run_id}`.
+Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id` in the JSON body; successful responses set `X-Run-Id`. Chat, run summary, and sanitized events are written together; traces are read from `GET /runs/{run_id}`.
 
 ---
 
@@ -59,21 +59,30 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 
 **Tool** (keyword route → in-process `work_order_lookup`):
 
-`POST /chat` has no identity, so `TrustedScope` is empty and tool lookups fail closed. Tests and evaluation pass a backend scope into `AsyncAgentRuntime.run`.
+Send demo scope headers. They are **not** authentication. The API copies `X-Tenant-Id` / `X-Property-Id` onto backend `TrustedScope`. The message cannot create scope. Missing headers still fail closed.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/chat \
+curl -sD - -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: tenant-a" \
+  -H "X-Property-Id: prop-1" \
   -d '{"message":"Check work order WO-123"}'
 ```
 
-```json
-{"response": "The request could not be verified."}
+```
+HTTP/1.1 200 OK
+X-Run-Id: …
 ```
 
-Messages containing `"policy"` take `maintenance_policy_lookup`. `"work order"` / `"maintenance"` take `work_order_lookup`. Missing IDs, cross-tenant hits, and stale policies return `"The request could not be verified."`
+```json
+{"response": "Work order WO-123 is open (plumbing)."}
+```
 
-**Trace** — `run_id` is not in the chat body. Read it from the latest `agent_runs` row or from the `chat_success` JSON log, then:
+Without those headers, the same message returns `"The request could not be verified."`
+
+Messages containing `"policy"` take `maintenance_policy_lookup`. `"work order"` / `"maintenance"` take `work_order_lookup`. Missing IDs, cross-tenant hits, missing scope, and stale policies return `"The request could not be verified."`
+
+**Trace** — `run_id` is not in the chat body. Copy `X-Run-Id` from the chat response, then:
 
 ```bash
 curl -s http://127.0.0.1:8000/runs/{run_id}

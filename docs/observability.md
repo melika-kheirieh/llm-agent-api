@@ -6,6 +6,7 @@ After each `AsyncAgentRuntime` run, `trace_from_state()` builds an `ExecutionTra
 
 - logged on successful `POST /chat`
 - persisted on `agent_runs` (summary) and `agent_run_events` (sanitized steps)
+- advertised to operators as the `X-Run-Id` response header on successful `POST /chat` (not in the JSON body)
 - readable via `GET /runs/{run_id}`
 
 Stored / returned fields:

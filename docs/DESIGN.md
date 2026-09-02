@@ -8,7 +8,7 @@ The goal is **clarity and correctness**, not feature breadth.
 
 ## API Surface
 
-**POST `/chat`** — `{ "response": "..." }` only. Empty message → `400`. Missing field → `422`. The body does not include `run_id`.
+**POST `/chat`** — `{ "response": "..." }` only. Empty message → `400`. Missing field → `422`. The body does not include `run_id`. Optional `X-Tenant-Id` / `X-Property-Id` headers become backend `TrustedScope` (demo propagation, not authentication). Successful responses set `X-Run-Id`.
 
 **GET `/runs/{run_id}`** — persisted run summary and sanitized step events, or `404`.
 
@@ -57,12 +57,13 @@ save_chat_and_trace()  — one AsyncSession, one commit
 
 1. Receive `message` via `POST /chat`
 2. Validate input (reject missing or empty message)
-3. `AsyncAgentRuntime` runs the request on a compiled in-process graph:
+3. Copy `X-Tenant-Id` / `X-Property-Id` into backend `TrustedScope` (never from the message)
+4. `AsyncAgentRuntime` runs the request on a compiled in-process graph:
    * **DIRECT** — `route_node` → `answer_node` (async LLM provider)
    * **USE_TOOL** — `tool_node` (`work_order_lookup` or `maintenance_policy_lookup`) → `verify_node` → `answer_node` or `recovery_node`
    * Unverified or exhausted retries return `"The request could not be verified."`
-4. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
-5. Return `{ "response" }` only
+5. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
+6. Return `{ "response" }` only, plus `X-Run-Id` when the run was persisted
 
 If that transaction fails, no chat, run, or event rows are committed and the API returns `503`.
 
@@ -162,7 +163,7 @@ OpenAI tries native JSON-object formatting, then falls back to `generate()` plus
 
 **Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` dispatches to a work-order gate or a policy gate (required fields, scope match, allowed status/action, policy freshness). It is **not** a second model and it does not accept unknown tools.
 
-**Why TrustedScope is not in tool arguments?** Authorization is a backend fact. If `tenant_id` / `property_id` lived in model-generated arguments, the router could be talked into another tenant. Tools receive `TrustedScope` as a separate keyword argument; extra scope keys in routing JSON are a `RoutingError`.
+**Why TrustedScope is not in tool arguments?** Authorization is a backend fact. If `tenant_id` / `property_id` lived in model-generated arguments, the router could be talked into another tenant. Tools receive `TrustedScope` as a separate keyword argument; extra scope keys in routing JSON are a `RoutingError`. HTTP copies `X-Tenant-Id` / `X-Property-Id` onto that object. Those headers are demo scope propagation, not authentication: missing values still fail closed, and the user message cannot create scope.
 
 **Why sanitize tool evidence?** Verified observations still contain tenant/property so the verifier can check scope. Answer context is a different audience: `ToolEvidence` drops those fields. Raw observations stay on `AgentState` for debugging. Traces log `error_code`, not `tenant_id`.
 
@@ -170,7 +171,7 @@ OpenAI tries native JSON-object formatting, then falls back to `generate()` plus
 
 **Why bounded retries?** Transient tool failures should retry once (`max_attempts=2`) and then stop. Unbounded loops hide bugs and burn the provider. After the budget, the run goes to human review with a fixed message.
 
-**Why persist execution traces?** Logs explain a single process. `agent_runs` plus `agent_run_events` make route, tools, verification, recovery, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat, run summary, and events share one transaction so a persist failure cannot leave a chat row without a run. This is not replay, memory, or a LangGraph checkpointer.
+**Why persist execution traces?** Logs explain a single process. `agent_runs` plus `agent_run_events` make route, tools, verification, recovery, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators read `X-Run-Id` then `GET /runs/{run_id}`. Chat, run summary, and events share one transaction so a persist failure cannot leave a chat row without a run. This is not replay, memory, or a LangGraph checkpointer.
 
 **Why LangGraph only for transitions?** The control loop was already correct as an explicit `AsyncAgentRuntime` method chain. Moving **edges** into LangGraph makes route / tool / verify / recover / answer paths visible as a graph without copying that logic into nodes. Nodes call the existing steps. There is no checkpointer, no multi-agent graph, and no LangChain chain. Tracing still uses `TraceEvent` on `AgentState`; it does not depend on LangGraph internals.
 
