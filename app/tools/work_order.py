@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.agent.tools import ToolResult
+
 
 @dataclass(frozen=True)
 class WorkOrder:
@@ -11,16 +13,16 @@ class WorkOrder:
 class WorkOrderLookupTool:
     name = "work_order_lookup"
 
-    def execute(self, arguments: dict) -> dict:
+    async def execute(self, arguments: dict) -> ToolResult:
         work_order_id = arguments.get("work_order_id")
         if not work_order_id:
-            return {"success": False, "error": "missing_work_order_id"}
+            return ToolResult(success=False, data={"error": "missing_work_order_id"})
 
-        return {
-            "success": True,
-            "data": {
+        return ToolResult(
+            success=True,
+            data={
                 "work_order_id": work_order_id,
                 "status": "open",
                 "issue_type": "plumbing",
             },
-        }
+        )
