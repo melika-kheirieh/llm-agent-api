@@ -28,6 +28,7 @@ class ExecutionTrace:
     outcome: str = "success"
     failure_class: str | None = None
     thread_id: str | None = None
+    recovery_decision: str | None = None
 
     def as_log_fields(self) -> dict:
         return {
@@ -40,6 +41,7 @@ class ExecutionTrace:
             "retry_count": self.retry_count,
             "outcome": self.outcome,
             "failure_class": self.failure_class,
+            "recovery_decision": self.recovery_decision,
         }
 
 
@@ -87,4 +89,7 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
         retry_count=retry_count,
         outcome=outcome,
         failure_class=failure_class,
+        recovery_decision=(
+            state.recovery_decision.value if state.recovery_decision is not None else None
+        ),
     )

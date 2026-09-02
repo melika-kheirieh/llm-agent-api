@@ -2,25 +2,122 @@ import asyncio
 
 from app.evaluation.agent_cases import DEFAULT_CASES
 from app.evaluation.metrics import EvaluationResult
-from app.evaluation.runner import build_evaluation_runtime, run_case
+from app.evaluation.runner import run_case
+from app.evaluation.trajectory import Trajectory
 
 
-def test_evaluation_result_compares_status():
-    result = EvaluationResult(
-        case_name="successful_execution",
-        expected_status="completed",
-        actual_status="completed",
+def test_evaluation_result_compares_full_trajectory():
+    matching = EvaluationResult(
+        case_name="successful_work_order_lookup",
+        expected=Trajectory(
+            action="use_tool",
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-123"},
+            verification_result=True,
+            attempts=1,
+            outcome="success",
+            terminal_status="completed",
+        ),
+        actual=Trajectory(
+            action="use_tool",
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-123"},
+            verification_result=True,
+            attempts=1,
+            outcome="success",
+            terminal_status="completed",
+        ),
     )
-    assert result.passed
+    mismatched_action = EvaluationResult(
+        case_name="successful_work_order_lookup",
+        expected=Trajectory(action="use_tool", terminal_status="completed"),
+        actual=Trajectory(action="direct", terminal_status="completed"),
+    )
+    mismatched_arguments = EvaluationResult(
+        case_name="successful_work_order_lookup",
+        expected=Trajectory(
+            action="use_tool",
+            tool_arguments={"work_order_id": "WO-123"},
+        ),
+        actual=Trajectory(
+            action="use_tool",
+            tool_arguments={"work_order_id": "WO-999"},
+        ),
+    )
+    assert matching.passed
+    assert not mismatched_action.passed
+    assert not mismatched_arguments.passed
 
 
-def test_default_cases_execute_against_runtime():
-    runtime = build_evaluation_runtime()
-
+def test_all_trajectory_cases_pass():
     async def _run():
-        return [await run_case(case, runtime) for case in DEFAULT_CASES]
+        return [await run_case(case) for case in DEFAULT_CASES]
 
     results = asyncio.run(_run())
 
-    assert results
-    assert all(result.passed for result in results)
+    assert len(results) == len(DEFAULT_CASES)
+    failed = [result.case_name for result in results if not result.passed]
+    assert failed == []
+
+
+def test_invalid_verification_payload_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "invalid_verification_payload")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.verification_result is False
+    assert result.actual.recovery_decision == "fail"
+    assert result.actual.failure_class == "verification_failed"
+    assert result.passed
+
+
+def test_retryable_tool_failure_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "retryable_tool_failure")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.attempts == 2
+    assert result.actual.recovery_decision == "retry"
+    assert result.actual.verification_result is True
+    assert result.actual.outcome == "success"
+    assert result.passed
+
+
+def test_non_retryable_tool_failure_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "non_retryable_tool_failure")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.attempts == 1
+    assert result.actual.recovery_decision == "fail"
+    assert result.actual.outcome == "needs_human_review"
+    assert result.passed
+
+
+def test_malformed_tool_result_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "malformed_tool_result")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.verification_result is False
+    assert result.actual.recovery_decision == "fail"
+    assert result.passed
+
+
+def test_wrong_tool_selection_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "wrong_tool_selection")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "use_tool"
+    assert result.actual.tool_name == "work_order_lookup"
+    assert result.actual.verification_result is None
+    assert result.actual.attempts == 0
+    assert result.actual.recovery_decision is None
+    assert result.actual.failure_class == "needs_review"
+    assert result.passed
+
+
+def test_retry_exhaustion_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "retry_exhaustion")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.attempts == 2
+    assert result.actual.recovery_decision == "escalate"
+    assert result.actual.failure_class == "verification_failed"
+    assert result.passed

@@ -114,6 +114,7 @@ class AsyncAgentRuntime:
                 return _format_tool_answer(last), state
 
             action = self.recovery.decide(attempts, result.retryable)
+            state = replace(state, recovery_decision=action)
             if action == RecoveryAction.RETRY:
                 continue
 

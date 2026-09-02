@@ -44,12 +44,15 @@ def _build_runtime() -> AsyncAgentRuntime:
     return build_runtime()
 
 
-def build_runtime(llm: AsyncLLMClient | None = None) -> AsyncAgentRuntime:
+def build_runtime(
+    llm: AsyncLLMClient | None = None,
+    tools: dict[str, AgentTool] | None = None,
+) -> AsyncAgentRuntime:
     return AsyncAgentRuntime(
         llm or _build_llm(),
         timeout_seconds=float(settings.llm_timeout_seconds),
         router=AgentRouter(),
-        tools=_build_tools(),
+        tools=_build_tools() if tools is None else tools,
         verifier=ToolVerifier(),
         recovery=RecoveryPolicy(max_attempts=2),
         context_policy=ContextPolicy(),

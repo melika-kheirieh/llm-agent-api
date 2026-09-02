@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any
 
 from app.agent.observation import Observation
+from app.agent.recovery import RecoveryAction
 
 
 class AgentStatus(str, Enum):
@@ -21,4 +22,5 @@ class AgentState:
     verification_result: bool | None = None
     attempts: int = 0
     observations: tuple[Observation, ...] = ()
+    recovery_decision: RecoveryAction | None = None
     status: AgentStatus = AgentStatus.CREATED

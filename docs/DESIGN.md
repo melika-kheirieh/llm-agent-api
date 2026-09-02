@@ -66,7 +66,8 @@ save_chat_and_trace()  — one AsyncSession, one commit
 
 If that transaction fails, neither row is committed and the API returns `503`.
 
-Evaluation uses `build_runtime(fake LLM)` so cases exercise the same loop.
+Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
+attempts, recovery, outcome) against the same loop. It does not score answer text.
 
 ---
 
@@ -81,7 +82,7 @@ The live runtime is explicit, not a hidden graph:
 * **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures, then human review. `ESCALATE` and `FAIL` both surface as the same review message today
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
 * **Traces** — `trace_from_state()` after each run; logged and persisted with the chat row
-* **Evaluation** — regression on terminal `AgentStatus` against the same `build_runtime` wiring, not answer-quality scoring
+* **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring
 
 The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.
 
