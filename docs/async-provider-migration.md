@@ -1,16 +1,6 @@
 # Async Provider Migration
 
-## Status
-
-Complete. Live providers implement `AsyncLLMClient`. `AsyncAgentRuntime` is the only execution path.
-
-## What landed
-
-- Async LLM provider contract
-- Ollama (`httpx`) and OpenAI (`AsyncOpenAI`) implementations
-- Timeout ownership on the runtime (`LLM_TIMEOUT_SECONDS`)
-- Cancellation-safe provider `generate` / `aclose`
-- Provider selection remains independent from agent orchestration
+Completed. The live boundary is `AsyncLLMClient`; Ollama and OpenAI implement it. `AsyncAgentRuntime` owns timeout and cancellation for the run.
 
 ## Non-goals (still deferred)
 
@@ -18,4 +8,4 @@ Complete. Live providers implement `AsyncLLMClient`. `AsyncAgentRuntime` is the 
 - Distributed execution
 - Queue lifecycle
 
-Those layers should build on top of the stable async runtime and must not be added as empty stubs.
+Those layers should build on top of the current in-process async runtime, not replace it.

@@ -1,28 +1,41 @@
 # Agent Observability
 
-## HTTP logs
-
-Each request is logged with path, method, status, and `latency_ms`. Successful chats also log execution-trace fields (`run_id`, terminal status, decision, selected tool, verification, attempts, retry count, outcome, failure class).
-
 ## Execution Trace
 
-`AsyncAgentRuntime.run_with_trace()` maps finished `AgentState` into an `ExecutionTrace`. After the run, the API persists that trace on `agent_runs` and exposes it at `GET /runs/{run_id}`.
+After each `AsyncAgentRuntime` run, `trace_from_state()` builds an `ExecutionTrace` that is:
 
-Stored fields:
+- logged on successful `POST /chat`
+- persisted on `agent_runs`
+- readable via `GET /runs/{run_id}`
 
-- run_id
-- terminal_status
-- decision
-- selected_tool
-- verification_result
-- attempts
-- retry_count
-- outcome
-- failure_class
-- created_at
+Stored / returned fields:
 
-Thread / conversation context is not implemented. `thread_id` is not persisted.
+- `run_id`
+- `terminal_status`
+- `decision`
+- `selected_tool`
+- `verification_result`
+- `attempts`
+- `retry_count`
+- `outcome`
+- `failure_class`
+- `created_at` (persist time)
+
+HTTP request logs also record `path`, `method`, `status`, and `latency_ms`.
+
+Thread-scoped context is not implemented. Trace objects may carry a `thread_id` of `None`; it is not persisted.
+
+## Reliability Signals
+
+The runtime already encodes:
+
+- successful DIRECT and tool runs (`outcome=success`)
+- bounded retries (`retry_count`)
+- verification failure / review (`needs_human_review`)
+- upstream LLM timeout/errors (`502`)
+
+No separate metrics collector or tracing vendor is wired.
 
 ## Design Notes
 
-Observability stays framework-agnostic: structured logs plus a queryable SQLite table. External monitoring systems can be integrated later without changing the agent core.
+Observability stays framework-agnostic. External monitoring can be added later without changing the agent loop.

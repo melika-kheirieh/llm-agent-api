@@ -1,6 +1,6 @@
 # Design — LLM Agent API
 
-This project implements a production-leaning FastAPI service that runs an async LLM agent and stores chat messages plus execution traces.
+This project implements a production-leaning FastAPI service that runs an async LLM agent and stores both chat messages and execution traces.
 
 The goal is **clarity and correctness**, not feature breadth.
 
@@ -18,15 +18,17 @@ The goal is **clarity and correctness**, not feature breadth.
 
 ```json
 {
-  "response": "LLM generated answer"
+  "response": "Agent answer"
 }
 ```
 
-Invalid or empty input is rejected with `400 Bad Request`. The success payload stays `{ "response": "..." }`.
+Invalid or empty input is rejected with `400 Bad Request`.
+
+The chat body **does not include `run_id` or other trace fields**. That is intentional: `/chat` stays a stable answer contract for clients. Traces are an observability surface (`chat_success` logs, `agent_runs`, `GET /runs/{run_id}`), not part of the chat payload.
 
 **GET `/runs/{run_id}`**
 
-Returns the persisted execution trace for a completed run, or `404` if the id is unknown.
+Returns the persisted `ExecutionTrace` for that run, or `404` if unknown.
 
 ---
 
@@ -35,61 +37,63 @@ Returns the persisted execution trace for a completed run, or `404` if the id is
 ```
 Client
   ↓
-FastAPI (POST /chat)
+FastAPI
+  POST /chat
+  GET  /runs/{run_id}
   ↓
 AsyncAgentRuntime.run_with_trace()
+  → AgentRouter
+       DIRECT  → AsyncLLMClient.generate
+       USE_TOOL → AgentTool.execute
+                → Observation
+                → ToolVerifier
+                → RecoveryPolicy (retry or review)
+  → ExecutionTrace
   ↓
-AgentRouter
-  ├─ DIRECT → AsyncLLMClient (Ollama / OpenAI)
-  └─ USE_TOOL → work_order_lookup
-                  ↓
-                Observation → ToolVerifier → RecoveryPolicy
-  ↓
-ExecutionTrace
-  ↓
-Persistence
-  ├─ chat_messages
-  └─ agent_runs
+Persistence (async SQLAlchemy / SQLite)
+  chat_messages
+  agent_runs
 ```
 
 **Key properties**
 
-* The API layer is **provider-agnostic**
-* `AsyncAgentRuntime` owns orchestration
-* LLM providers are accessed through `AsyncLLMClient`
-* Tools, verification, and recovery are explicit steps
-* Each layer has a clear responsibility and boundary
+* The API layer is provider-agnostic
+* `AsyncAgentRuntime` is the execution source of truth
+* LLM providers implement `AsyncLLMClient`
+* Persistence is isolated behind the repository (`save_chat`, `save_trace`, `get_trace`)
 
 ---
 
 ## Core Flow
 
 1. Receive `message` via `POST /chat`
-2. Validate input (reject missing or empty message with `400`)
-3. Execute `AsyncAgentRuntime.run_with_trace(message)`:
-   * Route to `DIRECT` or `USE_TOOL`
-   * `DIRECT` calls the async LLM provider
-   * `USE_TOOL` executes the selected tool, records an observation, verifies the result, and retries at most once when the failure is retryable
-   * Unverified tool results return a fixed review message
-4. Persist the chat row and the `ExecutionTrace` (`agent_runs`)
-5. Return `{ "response": ... }`
-6. Inspect a run later with `GET /runs/{run_id}`
+2. Validate input (reject missing or empty message)
+3. `AsyncAgentRuntime` routes the request:
+   * **DIRECT** — generate an answer with the async LLM provider
+   * **USE_TOOL** — run `work_order_lookup`, record an observation, verify the result
+   * Unverified or exhausted retries return a review message (`"The request could not be verified."`)
+4. Persist `{message, response}` on `chat_messages`
+5. Persist the `ExecutionTrace` on `agent_runs`
+6. Return `{response}` only
 
-The whole runtime call is wrapped in a timeout (`LLM_TIMEOUT_SECONDS`).
+Evaluation uses `build_runtime(fake LLM)` so cases exercise the same loop.
 
 ---
 
-## Agent Runtime
+## Agent Core v1
 
-`AsyncAgentRuntime` is the execution source of truth.
+The live runtime is explicit, not a hidden graph:
 
-* Router decides `DIRECT` vs `USE_TOOL` from the message
-* Tool path uses `Observation`, `ToolVerifier`, and `RecoveryPolicy(max_attempts=2)`
-* Context policy selects non-empty observations from the **current run only** (no conversation history)
-* `run_with_trace()` maps `AgentState` to an `ExecutionTrace`
-* Evaluation uses the same `build_runtime()` wiring with a fake LLM
+* **Router** — deterministic keyword match (`"work order"` / `"maintenance"`), not an LLM planner
+* **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
+* **Observation** — tool outcome attached to `AgentState`
+* **Verification** — structural: `result.success` and non-empty `data`. Not a second model or domain policy
+* **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures, then human review. `ESCALATE` and `FAIL` both surface as the same review message today
+* **Context policy** — drops empty items from the **current run** only (no conversation history)
+* **Traces** — `trace_from_state()` after each run; logged and persisted
+* **Evaluation** — regression on terminal `AgentStatus` against the same `build_runtime` wiring, not answer-quality scoring
 
-The HTTP chat contract does not expose these internals.
+The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.
 
 ---
 
@@ -120,16 +124,22 @@ This approach:
 
 ## Persistence
 
-Async SQLAlchemy stores:
+Async SQLAlchemy (SQLite via `sqlite+aiosqlite`) stores:
 
-* `chat_messages`: `message`, `response`, `created_at`
-* `agent_runs`: `run_id`, terminal status, decision, selected tool, verification, attempts, retry count, outcome, failure class, `created_at`
+**`chat_messages`**
 
-SQLite (`sqlite+aiosqlite`) is chosen because it:
+* `message`
+* `response`
+* `created_at`
 
-* Requires zero setup
-* Is easy to inspect locally
-* Keeps operational complexity low
+**`agent_runs`**
+
+* `run_id` (primary key)
+* `terminal_status`, `decision`, `selected_tool`, `verification_result`
+* `attempts`, `retry_count`, `outcome`, `failure_class`
+* `created_at`
+
+SQLite is chosen because it requires zero setup and is easy to inspect locally.
 
 ---
 
@@ -138,45 +148,37 @@ SQLite (`sqlite+aiosqlite`) is chosen because it:
 The API exposes explicit failure boundaries:
 
 * Client input error → `400`
-* Unknown run id → `404`
+* Unknown `run_id` → `404`
 * Upstream LLM failure → `502`
 * Persistence failure → `503`
 * Unexpected internal error → `500`
-
-This separation ensures failures are:
-
-* easier to debug
-* easier to reason about
-* correctly attributed to their source
 
 ---
 
 ## Observability (Intentionally Minimal)
 
-To avoid over-engineering:
-
 * Structured JSON logs
 * Request latency logging (`latency_ms`)
-* Execution traces on each successful chat
-* Queryable `agent_runs` rows
+* `ExecutionTrace` fields on successful chat logs
+* Queryable runs via `GET /runs/{run_id}`
 
-No tracing frameworks or metrics stacks are included.
+No external tracing or metrics stacks are required.
 
 ---
 
 ## Explicit Non-Goals (Scope Control)
 
-The following are deferred and exist only as documentation, not as modules:
+Deferred to later milestones (documentation only):
 
 * Conversation memory / thread context
 * Checkpoints
 * Specialists and `DELEGATE`
-* RabbitMQ, workers, or distributed execution
+* Distributed workers / RabbitMQ
 * RAG or vector databases
 * LangChain / LangGraph
-* Authentication, streaming, or a UI
+* Authentication, streaming, UI
 
-These omissions keep the system simple, testable, and easy to review.
+These omissions keep the current system simple, testable, and honest about what runs.
 
 ---
 

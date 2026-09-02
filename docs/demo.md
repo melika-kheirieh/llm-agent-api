@@ -1,81 +1,81 @@
 # Demo — LLM Agent API
 
-This is a quick 30–60 second demo to validate the core flow of the system.
+About 60 seconds. `POST /chat` returns only `{"response": "..."}`. The trace is a separate read.
 
 ---
 
 ## 1) Start the API
 
 ```bash
-uvicorn app.main:app --reload
+pip install -r requirements.txt
+cp .env.example .env
+python -m uvicorn app.main:app --reload
 ```
-
-The service will be available at:
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
+Use Ollama (`ollama serve && ollama pull gemma`) or set `LLM_PROVIDER=openai` in `.env`.
+
 ---
 
-## 2) Send a request
+## 2) DIRECT path (LLM)
 
 ```bash
-curl -X POST http://127.0.0.1:8000/chat \
+curl -s -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Explain what an API is in one sentence"}'
 ```
 
-Example response:
+The body is the answer only. The router did not match work-order keywords, so `AsyncAgentRuntime` called `AsyncLLMClient`.
 
-```json
-{
-  "response": "An API is a way for software systems to communicate with each other."
-}
-```
+---
 
-Work-order phrasing takes the tool path instead of the LLM:
+## 3) Tool path (stub lookup)
 
 ```bash
-curl -X POST http://127.0.0.1:8000/chat \
+curl -s -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Check work order WO-123"}'
 ```
 
----
-
-## 3) Validate persistence
-
-Successful chats write two SQLite tables in `app.db`:
-
-* `chat_messages` — user message and agent response
-* `agent_runs` — execution trace (`run_id`, decision, tool, verification, outcome)
-
-Inspect with any SQLite client, or query a trace:
-
-```bash
-curl http://127.0.0.1:8000/runs/{run_id}
+```json
+{"response": "Work order WO-123 is open (plumbing)."}
 ```
 
+This is keyword routing plus an in-process fixture, not a live work-order system. A message like `"Need maintenance help"` (no ID) returns `"The request could not be verified."`
+
 ---
 
-## 4) Run tests (no real LLM required)
+## 4) Fetch the trace
+
+`run_id` is not in the chat JSON. After a successful `/chat`, it is:
+
+- on the `chat_success` log line (`"run_id": "..."`)
+- in SQLite `agent_runs`
+
+```bash
+sqlite3 app.db "SELECT run_id, decision, selected_tool, outcome FROM agent_runs ORDER BY created_at DESC LIMIT 1;"
+```
+
+```bash
+curl -s http://127.0.0.1:8000/runs/{run_id}
+```
+
+Unknown ids return **404**.
+
+---
+
+## 5) Tests (no real LLM)
 
 ```bash
 pytest -q
 ```
 
-Notes:
-
-* Tests do not call a real LLM
-* HTTP tests override the agent with FastAPI DI
-* Runtime and evaluation tests exercise `AsyncAgentRuntime` with a fake LLM
-
 ---
 
 ## What this demo shows
 
-* `POST /chat` is functional and still returns `{ "response": "..." }`
-* `AsyncAgentRuntime` routes `DIRECT` vs tool execution
-* Tool results are verified; failures can retry once then go to review
-* Chat rows and execution traces are persisted
-* `GET /runs/{run_id}` loads a stored trace
-* The system is testable without external dependencies
+* Chat clients stay on `{ "response" }`
+* DIRECT vs tool is an explicit runtime choice
+* Tool success, verification failure, and traces are durable
+* The loop is testable without a provider

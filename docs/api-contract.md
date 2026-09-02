@@ -1,5 +1,9 @@
 # API Contract
 
+HTTP response shapes for existing endpoints. `POST /chat` remains `{ "response": string }` only.
+
+---
+
 ## POST /chat
 
 ### Request
@@ -30,24 +34,59 @@
 }
 ```
 
-The success body is only `{ "response": "..." }`. Routing, tool use, retries, and traces are not included in this payload.
+The chat body does not include `run_id` or other trace fields. Chat stays an answer-only contract; traces are queried separately from `agent_runs` via `GET /runs/{run_id}` (and appear on the `chat_success` log line).
 
-After a successful run the service also writes:
+### Errors
 
-* a `chat_messages` row
-* an `agent_runs` row for the execution trace
+#### 400 Bad Request — Business validation error
+
+Returned when the input is structurally valid but semantically invalid.
+
+Example: `message` is an empty string
+
+```json
+{
+  "detail": "message is required"
+}
+```
+
+#### 422 Unprocessable Entity — Schema validation error
+
+Returned when the request body does not match the expected schema (for example, `message` is missing).
+
+#### 502 Bad Gateway — Upstream LLM failure
+
+Returned when the LLM provider (OpenAI or Ollama) fails.
+
+This indicates:
+
+* the request was valid
+* the failure occurred in an external dependency
+
+#### 503 Service Unavailable — Persistence failure
+
+Returned when the database is unavailable or write operations fail (`save_chat` or `save_trace`).
+
+This indicates:
+
+* the agent pipeline succeeded
+* but persistence could not be completed
+
+#### 500 Internal Server Error — Unexpected failure
+
+Returned for unhandled or unknown internal errors.
 
 ---
 
 ## GET /runs/{run_id}
 
-Returns the persisted execution trace for a run.
+Returns the persisted execution trace for a completed run.
 
 ### Success (200 OK)
 
 ```json
 {
-  "run_id": "...",
+  "run_id": "…",
   "terminal_status": "completed",
   "decision": "direct",
   "selected_tool": null,
@@ -56,17 +95,19 @@ Returns the persisted execution trace for a run.
   "retry_count": 0,
   "outcome": "success",
   "failure_class": null,
-  "created_at": "2026-09-02T12:00:00+00:00"
+  "created_at": "…"
 }
 ```
 
-`decision` is `direct` or `use_tool`. `selected_tool` is set when the router chose a tool (currently `work_order_lookup`).
+`decision` is `"direct"` or `"use_tool"`. Tool runs may set `selected_tool`, `verification_result`, `attempts`, and `retry_count`. Review paths use `terminal_status` / `outcome` of `needs_human_review`.
 
-This response does **not** include the chat `response` text.
+This endpoint does not return the chat `response`.
 
-### 404 Not Found
+### Errors
 
-Returned when `run_id` is unknown.
+#### 404 Not Found
+
+Unknown `run_id`:
 
 ```json
 {
@@ -74,95 +115,23 @@ Returned when `run_id` is unknown.
 }
 ```
 
----
+#### 503 Service Unavailable — Persistence failure
 
-## Error Handling
-
-The API distinguishes failures across different layers:
-
-### 400 Bad Request — Business validation error
-
-Returned when the input is structurally valid but semantically invalid.
-
-Example:
-
-* `message` is an empty string
-
-```json
-{
-  "detail": "message is required"
-}
-```
-
----
-
-### 422 Unprocessable Entity — Schema validation error
-
-Returned when the request body does not match the expected schema.
-
-Example:
-
-* `message` field is missing
-
----
-
-### 404 Not Found — Unknown run
-
-Returned by `GET /runs/{run_id}` when the trace does not exist.
-
----
-
-### 502 Bad Gateway — Upstream LLM failure
-
-Returned when the LLM provider (e.g., OpenAI or Ollama) fails.
-
-This indicates:
-
-* the request was valid
-* the failure occurred in an external dependency
-
----
-
-### 503 Service Unavailable — Persistence failure
-
-Returned when the database is unavailable or write/read operations fail.
-
-On `POST /chat` this indicates:
-
-* the agent pipeline succeeded
-* but persistence could not be completed
-
----
-
-### 500 Internal Server Error — Unexpected failure
-
-Returned for unhandled or unknown internal errors.
+Returned when the database cannot be read.
 
 ---
 
 ## Design Rationale
 
-* **422 for schema validation**
-  FastAPI's built-in validation is used for structural request errors.
-
-* **400 for business validation**
-  Application-level validation (e.g., empty message) is handled explicitly.
-
-* **404 for missing runs**
-  Trace lookup is a read of durable `agent_runs` rows.
-
-* **502 for LLM failures**
-  LLM providers are treated as upstream dependencies.
-
-* **503 for persistence issues**
-  Database failures are treated as availability problems.
-
+* **422 for schema validation** — FastAPI's built-in validation for structural request errors
+* **400 for business validation** — empty `message` is handled explicitly
+* **404 for missing runs** — traces are queryable but not guaranteed for every client
+* **502 for LLM failures** — providers are upstream dependencies
+* **503 for persistence issues** — database failures are availability problems
 * **Clear failure boundaries**
-  Each status code maps to a specific layer:
-
   * 400 → business logic
   * 422 → schema validation
-  * 404 → missing resource
+  * 404 → unknown run
   * 502 → external dependency (LLM)
   * 503 → infrastructure (database)
   * 500 → internal application
