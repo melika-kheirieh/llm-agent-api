@@ -6,21 +6,22 @@ Accepted
 
 ## Context
 
-The project is a small LLM-backed FastAPI service. Agent Core v1 should keep clear boundaries, testability, and predictable behavior. The live execution path is async and includes routing, a tool loop, verification, bounded recovery, and persisted traces.
+The project is a small LLM-backed FastAPI service. Agent Core v1 should keep clear boundaries, testability, and predictable behavior. The live path is async: keyword routing, a stub tool loop, structural verification, bounded recovery, persisted traces, fail-fast config, and health/readiness probes.
 
 ## Decision
 
 V1 keeps the following boundaries:
 
-- **API** handles HTTP concerns and request validation. `POST /chat` returns `{ "response" }` only. `GET /runs/{run_id}` returns a persisted trace.
+- **API** handles HTTP. `POST /chat` returns `{ "response" }` only. `GET /runs/{run_id}` returns a persisted trace. `GET /health` is liveness (no I/O). `GET /ready` is `SELECT 1`.
+- **Startup** validates settings (`LLM_PROVIDER`, timeout, OpenAI key when required) before `init_db` and `init_runtime`.
 - **AsyncAgentRuntime** owns orchestration: deterministic keyword router → DIRECT or tool execution → observation → structural verification → recovery → `ExecutionTrace`.
 - **LLM providers** implement `AsyncLLMClient`. The API does not import vendor clients.
-- **Persistence** stays behind the repository: `save_chat`, `save_trace`, `get_trace` on async SQLAlchemy.
+- **Persistence** uses async SQLAlchemy. `POST /chat` writes chat and trace in one transaction (`save_chat_and_trace`). `get_trace` serves `/runs`.
 - **Evaluation** uses the same `build_runtime` wiring with a fake LLM.
 
 ## Non-goals for V1
 
-The following are intentionally deferred (documentation only; no placeholder modules):
+Deferred (documentation only; no placeholder modules):
 
 - conversation memory / thread context
 - checkpoints
@@ -30,6 +31,8 @@ The following are intentionally deferred (documentation only; no placeholder mod
 - LangChain / LangGraph
 - streaming responses
 - production authentication
+
+See [Design Decisions](../DESIGN.md#design-decisions) for why.
 
 ## Consequences
 

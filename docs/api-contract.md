@@ -1,6 +1,8 @@
 # API Contract
 
-HTTP response shapes for existing endpoints. `POST /chat` remains `{ "response": string }` only.
+HTTP response shapes. `POST /chat` remains `{ "response": string }` only.
+
+Invalid **environment** (unsupported `LLM_PROVIDER`, non-positive `LLM_TIMEOUT_SECONDS`, missing `OPENAI_API_KEY` for OpenAI) fails **process startup** via `ConfigurationError`. That is not an HTTP status.
 
 ---
 
@@ -16,15 +18,10 @@ HTTP response shapes for existing endpoints. `POST /chat` remains `{ "response":
 }
 ```
 
-### Validation Rules
+### Validation
 
-* `message` is **required**
-* `message` must be a **non-empty string**
-
-### Validation behavior
-
-* Missing `message` → **422 Unprocessable Entity** (handled by FastAPI)
-* Empty `message` → **400 Bad Request** (business-level validation)
+* `message` is **required** → missing field **422**
+* `message` must be a **non-empty string** after strip → empty **400** `"message is required"`
 
 ### Success (200 OK)
 
@@ -34,53 +31,25 @@ HTTP response shapes for existing endpoints. `POST /chat` remains `{ "response":
 }
 ```
 
-The chat body does not include `run_id` or other trace fields. Chat stays an answer-only contract; traces are queried separately from `agent_runs` via `GET /runs/{run_id}` (and appear on the `chat_success` log line).
+No `run_id` in the body. Chat and `ExecutionTrace` are persisted in **one transaction** (`save_chat_and_trace`). If that write fails, neither row is committed.
 
 ### Errors
 
-#### 400 Bad Request — Business validation error
+| Status | When |
+| --- | --- |
+| 400 | Empty `message` |
+| 422 | Schema mismatch (e.g. missing `message`) |
+| 502 | Upstream LLM failure or run timeout |
+| 503 | Persistence failure (chat + trace unit) |
+| 500 | Unhandled internal error |
 
-Returned when the input is structurally valid but semantically invalid.
-
-Example: `message` is an empty string
-
-```json
-{
-  "detail": "message is required"
-}
-```
-
-#### 422 Unprocessable Entity — Schema validation error
-
-Returned when the request body does not match the expected schema (for example, `message` is missing).
-
-#### 502 Bad Gateway — Upstream LLM failure
-
-Returned when the LLM provider (OpenAI or Ollama) fails.
-
-This indicates:
-
-* the request was valid
-* the failure occurred in an external dependency
-
-#### 503 Service Unavailable — Persistence failure
-
-Returned when the database is unavailable or write operations fail (`save_chat` or `save_trace`).
-
-This indicates:
-
-* the agent pipeline succeeded
-* but persistence could not be completed
-
-#### 500 Internal Server Error — Unexpected failure
-
-Returned for unhandled or unknown internal errors.
+**503** `"Database unavailable"` means the agent run finished but the atomic persist did not.
 
 ---
 
 ## GET /runs/{run_id}
 
-Returns the persisted execution trace for a completed run.
+Returns the persisted execution trace. Does not return the chat `response`.
 
 ### Success (200 OK)
 
@@ -99,39 +68,55 @@ Returns the persisted execution trace for a completed run.
 }
 ```
 
-`decision` is `"direct"` or `"use_tool"`. Tool runs may set `selected_tool`, `verification_result`, `attempts`, and `retry_count`. Review paths use `terminal_status` / `outcome` of `needs_human_review`.
-
-This endpoint does not return the chat `response`.
+`decision` is `"direct"` or `"use_tool"`. Review paths use `needs_human_review`.
 
 ### Errors
 
-#### 404 Not Found
-
-Unknown `run_id`:
-
-```json
-{
-  "detail": "run not found"
-}
-```
-
-#### 503 Service Unavailable — Persistence failure
-
-Returned when the database cannot be read.
+* **404** `"run not found"`
+* **503** `"Database unavailable"` when the read fails
 
 ---
 
-## Design Rationale
+## GET /health
 
-* **422 for schema validation** — FastAPI's built-in validation for structural request errors
-* **400 for business validation** — empty `message` is handled explicitly
-* **404 for missing runs** — traces are queryable but not guaranteed for every client
-* **502 for LLM failures** — providers are upstream dependencies
-* **503 for persistence issues** — database failures are availability problems
-* **Clear failure boundaries**
-  * 400 → business logic
-  * 422 → schema validation
-  * 404 → unknown run
-  * 502 → external dependency (LLM)
-  * 503 → infrastructure (database)
-  * 500 → internal application
+Process liveness. No database, no LLM.
+
+### Success (200 OK)
+
+```json
+{
+  "status": "ok"
+}
+```
+
+Docker `HEALTHCHECK` uses this endpoint.
+
+---
+
+## GET /ready
+
+Readiness: `SELECT 1` against the configured database.
+
+### Success (200 OK)
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### Errors
+
+* **503** `"Database unavailable"`
+
+---
+
+## Status map
+
+* 400 → business validation
+* 422 → schema validation
+* 404 → unknown run
+* 502 → external LLM
+* 503 → database (persist or `/ready`)
+* 500 → internal
+* startup `ConfigurationError` → process does not listen

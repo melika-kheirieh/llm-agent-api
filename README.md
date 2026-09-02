@@ -6,13 +6,7 @@ API → `AsyncAgentRuntime` → `AsyncLLMClient` → SQLite.
 
 This is **Agent Core v1**: a real control loop, not a chat wrapper. The router is **deterministic keyword matching** (not an LLM planner). The registered tool is an **in-process stub**. Verification is **structural** (`success` and non-empty data), not a second model.
 
----
-
-## Quick Demo
-
-[docs/demo.md](docs/demo.md) — DIRECT curl, tool curl, then `GET /runs/{run_id}`.
-
-Design: [docs/DESIGN.md](docs/DESIGN.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
+Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
 
 ---
 
@@ -24,6 +18,8 @@ Client
 FastAPI
   POST /chat          → {"response": "..."} only
   GET  /runs/{run_id} → persisted ExecutionTrace
+  GET  /health        → process liveness
+  GET  /ready         → database SELECT 1
   ↓
 AsyncAgentRuntime
   → AgentRouter (DIRECT | USE_TOOL)
@@ -33,10 +29,10 @@ AsyncAgentRuntime
   ↓
 AsyncLLMClient (Ollama / OpenAI)
   ↓
-SQLite: chat_messages, agent_runs
+SQLite (one transaction): chat_messages + agent_runs
 ```
 
-`POST /chat` does not return `run_id`. Traces are logged on `chat_success`, stored on `agent_runs`, and read from `GET /runs/{run_id}`.
+Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id`. Chat and trace are written together; traces are read from `GET /runs/{run_id}`.
 
 ---
 
@@ -48,7 +44,7 @@ cp .env.example .env
 python -m uvicorn app.main:app --reload
 ```
 
-Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example` (`DATABASE_URL=sqlite+aiosqlite:///./app.db`).
+Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example`. Startup validates `LLM_PROVIDER` (`ollama` | `openai`), `LLM_TIMEOUT_SECONDS` (positive number), and `OPENAI_API_KEY` when the provider is OpenAI.
 
 ---
 
@@ -82,12 +78,14 @@ Messages containing `"work order"` or `"maintenance"` take the tool path. Missin
 curl -s http://127.0.0.1:8000/runs/{run_id}
 ```
 
-Empty `message` → **400**. Missing field → **422**. LLM failure → **502**. DB failure → **503**. Unknown run → **404**.
-
 **Health**
 
-- `GET /health` — process liveness (no database, no LLM)
-- `GET /ready` — `SELECT 1` against SQLite; **503** if the database is unavailable
+```bash
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/ready
+```
+
+Empty `message` → **400**. Missing field → **422**. Unknown run → **404**. LLM failure → **502**. Database failure (including `/ready`) → **503**.
 
 ---
 
@@ -112,11 +110,13 @@ Deferred on purpose (docs only, no placeholder modules):
 - RAG / LangChain / LangGraph
 - authentication / streaming / UI
 
+Rationale is in [Design Decisions](docs/DESIGN.md#design-decisions).
+
 ---
 
 ## Docker (API only)
 
-The LLM runtime stays **outside** the container.
+The LLM runtime stays **outside** the container. The image `HEALTHCHECK` uses `/health` (liveness), not `/ready`.
 
 ```bash
 docker build -t llm-agent-api .
@@ -127,3 +127,5 @@ docker run --rm -p 8000:8000 \
   -e DATABASE_URL=sqlite+aiosqlite:///./app.db \
   llm-agent-api
 ```
+
+License: [MIT](LICENSE)

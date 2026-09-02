@@ -8,27 +8,13 @@ The goal is **clarity and correctness**, not feature breadth.
 
 ## API Surface
 
-**POST `/chat`**
+**POST `/chat`** — `{ "response": "..." }` only. Empty message → `400`. Missing field → `422`. The body does not include `run_id`.
 
-```json
-{
-  "message": "User question"
-}
-```
+**GET `/runs/{run_id}`** — persisted `ExecutionTrace`, or `404`.
 
-```json
-{
-  "response": "Agent answer"
-}
-```
+**GET `/health`** — process liveness. No database, no LLM.
 
-Invalid or empty input is rejected with `400 Bad Request`.
-
-The chat body **does not include `run_id` or other trace fields**. That is intentional: `/chat` stays a stable answer contract for clients. Traces are an observability surface (`chat_success` logs, `agent_runs`, `GET /runs/{run_id}`), not part of the chat payload.
-
-**GET `/runs/{run_id}`**
-
-Returns the persisted `ExecutionTrace` for that run, or `404` if unknown.
+**GET `/ready`** — `SELECT 1` against SQLite. `503` if the database is unavailable.
 
 ---
 
@@ -40,6 +26,10 @@ Client
 FastAPI
   POST /chat
   GET  /runs/{run_id}
+  GET  /health
+  GET  /ready
+  ↓
+validate_startup() → init_db() → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
   → AgentRouter
@@ -50,9 +40,8 @@ AsyncAgentRuntime.run_with_trace()
                 → RecoveryPolicy (retry or review)
   → ExecutionTrace
   ↓
-Persistence (async SQLAlchemy / SQLite)
-  chat_messages
-  agent_runs
+save_chat_and_trace()  — one AsyncSession, one commit
+  chat_messages + agent_runs
 ```
 
 **Key properties**
@@ -60,7 +49,7 @@ Persistence (async SQLAlchemy / SQLite)
 * The API layer is provider-agnostic
 * `AsyncAgentRuntime` is the execution source of truth
 * LLM providers implement `AsyncLLMClient`
-* Persistence is isolated behind the repository (`save_chat`, `save_trace`, `get_trace`)
+* Persistence is isolated behind the repository (`save_chat_and_trace`, `get_trace`)
 
 ---
 
@@ -71,10 +60,11 @@ Persistence (async SQLAlchemy / SQLite)
 3. `AsyncAgentRuntime` routes the request:
    * **DIRECT** — generate an answer with the async LLM provider
    * **USE_TOOL** — run `work_order_lookup`, record an observation, verify the result
-   * Unverified or exhausted retries return a review message (`"The request could not be verified."`)
-4. Persist `{message, response}` on `chat_messages`
-5. Persist the `ExecutionTrace` on `agent_runs`
-6. Return `{response}` only
+   * Unverified or exhausted retries return `"The request could not be verified."`
+4. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
+5. Return `{ "response" }` only
+
+If that transaction fails, neither row is committed and the API returns `503`.
 
 Evaluation uses `build_runtime(fake LLM)` so cases exercise the same loop.
 
@@ -90,85 +80,78 @@ The live runtime is explicit, not a hidden graph:
 * **Verification** — structural: `result.success` and non-empty `data`. Not a second model or domain policy
 * **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures, then human review. `ESCALATE` and `FAIL` both surface as the same review message today
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
-* **Traces** — `trace_from_state()` after each run; logged and persisted
+* **Traces** — `trace_from_state()` after each run; logged and persisted with the chat row
 * **Evaluation** — regression on terminal `AgentStatus` against the same `build_runtime` wiring, not answer-quality scoring
 
 The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.
 
 ---
 
-## Provider Selection (Configuration)
+## Configuration and startup
 
-Runtime behavior is configured exclusively via environment variables:
+Settings stay environment variables (no extra settings framework). `validate_startup()` runs in lifespan **before** `init_db` and `init_runtime`:
 
-**Ollama (local)**
+* `LLM_PROVIDER` must be `ollama` or `openai`
+* `LLM_TIMEOUT_SECONDS` must be a finite number `> 0`
+* `OPENAI_API_KEY` is required when the provider is OpenAI
 
-* `LLM_PROVIDER=ollama`
-* `OLLAMA_BASE_URL`
-* `OLLAMA_MODEL`
-
-**OpenAI (cloud)**
-
-* `LLM_PROVIDER=openai`
-* `OPENAI_API_KEY`
-* `OPENAI_MODEL`
-* Optional `OPENAI_BASE_URL`
-
-This approach:
-
-* Keeps the API layer clean
-* Avoids leaking provider-specific logic
-* Makes switching providers trivial
+Invalid config raises `ConfigurationError` and the process does not start (no HTTP status). Docker `HEALTHCHECK` uses `/health`, not `/ready`.
 
 ---
 
 ## Persistence
 
-Async SQLAlchemy (SQLite via `sqlite+aiosqlite`) stores:
+Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
-**`chat_messages`**
+**`chat_messages`** — `message`, `response`, `created_at`
 
-* `message`
-* `response`
-* `created_at`
+**`agent_runs`** — `run_id` (PK), `terminal_status`, `decision`, `selected_tool`, `verification_result`, `attempts`, `retry_count`, `outcome`, `failure_class`, `created_at`
 
-**`agent_runs`**
-
-* `run_id` (primary key)
-* `terminal_status`, `decision`, `selected_tool`, `verification_result`
-* `attempts`, `retry_count`, `outcome`, `failure_class`
-* `created_at`
-
-SQLite is chosen because it requires zero setup and is easy to inspect locally.
+`POST /chat` uses `save_chat_and_trace` (one session, one commit). Isolated `save_chat` / `save_trace` remain for tests and tooling. `GET /runs/{run_id}` uses `get_trace`.
 
 ---
 
 ## Error Strategy
 
-The API exposes explicit failure boundaries:
-
 * Client input error → `400`
+* Schema validation → `422`
 * Unknown `run_id` → `404`
-* Upstream LLM failure → `502`
-* Persistence failure → `503`
+* Upstream LLM failure / timeout → `502`
+* Persistence failure (chat write, trace write, `/ready`) → `503`
 * Unexpected internal error → `500`
+* Invalid environment → process fails at startup
 
 ---
 
 ## Observability (Intentionally Minimal)
 
 * Structured JSON logs
-* Request latency logging (`latency_ms`)
+* Request latency (`latency_ms`)
 * `ExecutionTrace` fields on successful chat logs
 * Queryable runs via `GET /runs/{run_id}`
-
-No external tracing or metrics stacks are required.
+* `/health` vs `/ready` (liveness vs database)
 
 ---
 
-## Explicit Non-Goals (Scope Control)
+## Design Decisions
 
-Deferred to later milestones (documentation only):
+**Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around a run, and propagate `CancelledError` without wrapping it as an LLM failure. The alternative (thread-per-request around sync HTTP) hid cancellation and timeout ownership.
+
+**Why deterministic routing instead of an LLM planner?** V1 needs a testable, cheap first boundary: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM planner would add latency, cost, and non-determinism before the first tool exists. The router is **keyword matching**, not function-calling.
+
+**Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a structural gate (`success` and non-empty `data`) so unverified output cannot be returned as if it were. It is **not** a second model or a maintenance-domain policy.
+
+**Why bounded retries?** Transient tool failures should retry once (`max_attempts=2`) and then stop. Unbounded loops hide bugs and burn the provider. After the budget, the run goes to human review with a fixed message.
+
+**Why persist execution traces?** Logs explain a single process. `agent_runs` makes `run_id`, decision, tool, verification, attempts, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat and trace share one transaction so a persist failure cannot leave a chat row without a run.
+
+**Why no memory / RAG / LangGraph / multi-agent?** Those layers are real products, not prerequisites for a correct control loop. Memory and RAG change retrieval, not routing. LangGraph would hide the loop this repo is meant to show. Specialists and `DELEGATE` are future routing actions, not stubs in the tree. Workers/RabbitMQ are a different execution topology on top of this in-process runtime.
+
+---
+
+## Explicit Non-Goals
+
+Deferred (documentation only; no placeholder modules):
 
 * Conversation memory / thread context
 * Checkpoints
@@ -177,8 +160,6 @@ Deferred to later milestones (documentation only):
 * RAG or vector databases
 * LangChain / LangGraph
 * Authentication, streaming, UI
-
-These omissions keep the current system simple, testable, and honest about what runs.
 
 ---
 
