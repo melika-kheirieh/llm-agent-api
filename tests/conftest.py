@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from app.infra.container import get_agent
-from app.infra.errors import UpstreamLLMError
-from app.main import app
+from app.infra.container import get_agent  # noqa: E402
+from app.infra.errors import UpstreamLLMError  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 class FakeAgent:
