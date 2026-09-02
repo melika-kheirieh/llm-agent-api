@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
+from app.agent.context import TrustedScope
 from app.agent.contracts import AgentAction
 from app.agent.state import AgentStatus
 from app.agent.tools import ToolResult
 from app.evaluation.trajectory import Trajectory
 from app.infra.errors import FailureClass
 from app.observability.events import TraceEventName as E
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 DIRECT_SUCCESS_EVENTS = (
@@ -66,6 +68,8 @@ class EvaluationCase:
     tool_delay_seconds: float | None = None
     router_kind: str = "keyword"
     route_output: str | None = None
+    trusted_scope: TrustedScope | None = None
+    scripted_tool_name: str = "work_order_lookup"
 
 
 DEFAULT_CASES = [
@@ -88,6 +92,7 @@ DEFAULT_CASES = [
     EvaluationCase(
         name="successful_work_order_lookup",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         expected=Trajectory(
             action=AgentAction.USE_TOOL.value,
             tool_name="work_order_lookup",
@@ -120,13 +125,13 @@ DEFAULT_CASES = [
     EvaluationCase(
         name="invalid_verification_payload",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         tool_results=(
             ToolResult(
                 success=True,
                 data={
-                    "work_order_id": "WO-123",
+                    **scoped_work_order_data(),
                     "status": "lost",
-                    "issue_type": "plumbing",
                 },
             ),
         ),
@@ -145,15 +150,12 @@ DEFAULT_CASES = [
     EvaluationCase(
         name="retryable_tool_failure",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         tool_results=(
             ToolResult(success=False, data={"error": "temporary"}, retryable=True),
             ToolResult(
                 success=True,
-                data={
-                    "work_order_id": "WO-123",
-                    "status": "open",
-                    "issue_type": "plumbing",
-                },
+                data=scoped_work_order_data(),
             ),
         ),
         expected=Trajectory(
@@ -267,6 +269,7 @@ DEFAULT_CASES = [
         message="Check work order WO-123",
         tool_delay_seconds=0.2,
         tool_timeout_seconds=0.05,
+        trusted_scope=DEFAULT_SCOPE,
         expected=Trajectory(
             action=AgentAction.USE_TOOL.value,
             tool_name="work_order_lookup",
@@ -277,6 +280,7 @@ DEFAULT_CASES = [
             recovery_decision="escalate",
             outcome="needs_human_review",
             terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            error_code="tool_timeout",
         ),
     ),
     EvaluationCase(
@@ -301,6 +305,7 @@ DEFAULT_CASES = [
         name="llm_chooses_work_order_lookup",
         message="hello there",
         router_kind="llm",
+        trusted_scope=DEFAULT_SCOPE,
         route_output=(
             '{"action": "use_tool", "tool_name": "work_order_lookup", '
             '"arguments": {"work_order_id": "WO-123"}}'
@@ -375,6 +380,125 @@ DEFAULT_CASES = [
             outcome="failure",
             terminal_status=AgentStatus.FAILED.value,
             event_names=MODEL_FAILURE_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="successful_maintenance_policy_lookup",
+        message="Check maintenance policy for plumbing",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="maintenance_policy_lookup",
+            tool_arguments={"issue_type": "plumbing"},
+            verification_result=True,
+            failure_class=None,
+            attempts=1,
+            recovery_decision=None,
+            outcome="success",
+            terminal_status=AgentStatus.COMPLETED.value,
+            event_names=TOOL_SUCCESS_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="cross_tenant_work_order",
+        message="Check work order WO-999",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-999"},
+            verification_result=False,
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=1,
+            recovery_decision="fail",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            event_names=TOOL_FAILURE_EVENTS,
+            error_code="cross_tenant",
+        ),
+    ),
+    EvaluationCase(
+        name="wrong_property_work_order",
+        message="Check work order WO-456",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-456"},
+            verification_result=False,
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=1,
+            recovery_decision="fail",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            event_names=TOOL_FAILURE_EVENTS,
+            error_code="wrong_property",
+        ),
+    ),
+    EvaluationCase(
+        name="missing_work_order",
+        message="Check work order WO-404",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-404"},
+            verification_result=False,
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=1,
+            recovery_decision="fail",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            event_names=TOOL_FAILURE_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="stale_policy",
+        message="Check maintenance policy for hvac",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="maintenance_policy_lookup",
+            tool_arguments={"issue_type": "hvac"},
+            verification_result=False,
+            failure_class=FailureClass.VERIFICATION_FAILURE.value,
+            attempts=1,
+            recovery_decision="fail",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+        ),
+    ),
+    EvaluationCase(
+        name="missing_policy",
+        message="Check maintenance policy for roofing",
+        trusted_scope=DEFAULT_SCOPE,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="maintenance_policy_lookup",
+            tool_arguments={"issue_type": "roofing"},
+            verification_result=False,
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=1,
+            recovery_decision="fail",
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            event_names=TOOL_FAILURE_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="wrong_tool_trap",
+        message="Check maintenance policy for plumbing",
+        omit_tools=True,
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="maintenance_policy_lookup",
+            tool_arguments={"issue_type": "plumbing"},
+            verification_result=None,
+            failure_class=FailureClass.TOOL_ERROR.value,
+            attempts=0,
+            recovery_decision=None,
+            outcome="needs_human_review",
+            terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
         ),
     ),
 ]

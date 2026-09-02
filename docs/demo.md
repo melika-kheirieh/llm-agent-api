@@ -45,7 +45,7 @@ The body is the answer only. The router did not match work-order keywords, so `A
 
 ---
 
-## 4) Tool path (stub lookup)
+## 4) Tool path (scoped lookup)
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/chat \
@@ -54,10 +54,10 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 ```
 
 ```json
-{"response": "Work order WO-123 is open (plumbing)."}
+{"response": "The request could not be verified."}
 ```
 
-This is keyword routing plus an in-process fixture, not a live work-order system. `"Need maintenance help"` (no ID) returns `"The request could not be verified."`
+`POST /chat` has no identity, so `TrustedScope` is empty and tool lookups fail closed. Tests and evaluation pass a backend tenant/property into `AsyncAgentRuntime`. `"policy"` routes to `maintenance_policy_lookup`; `"work order"` / `"maintenance"` route to `work_order_lookup`.
 
 Chat and trace are written in **one transaction**.
 

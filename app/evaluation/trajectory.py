@@ -11,6 +11,10 @@ class Trajectory:
     attempts is total tool executions (first try included).
     event_names is an optional ordered list of step event names; timestamps
     are never compared.
+    error_code is an optional tool error token (cross_tenant, wrong_property,
+    tool_timeout, not_found, …). It distinguishes domain/security rejections
+    from operational failures without a new FailureClass. Compared only when
+    expected.error_code is set.
     """
 
     action: str | None = None
@@ -23,3 +27,4 @@ class Trajectory:
     outcome: str = "success"
     terminal_status: str | None = None
     event_names: tuple[str, ...] | None = None
+    error_code: str | None = None

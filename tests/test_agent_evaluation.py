@@ -30,6 +30,13 @@ def test_default_cases_cover_required_trajectories():
         "llm_malformed_structured_output",
         "llm_invalid_tool_selection",
         "llm_invalid_arguments",
+        "successful_maintenance_policy_lookup",
+        "cross_tenant_work_order",
+        "wrong_property_work_order",
+        "missing_work_order",
+        "stale_policy",
+        "missing_policy",
+        "wrong_tool_trap",
     }
 
 
@@ -56,6 +63,7 @@ def test_evaluation_successful_work_order_lookup():
     assert result.actual.attempts == 1
     assert result.actual.recovery_decision is None
     assert result.actual.failure_class is None
+    assert result.actual.error_code is None
     assert result.passed
 
 
@@ -75,3 +83,20 @@ def test_evaluation_does_not_score_response_text():
         field == "response_text"
         for field in Trajectory.__dataclass_fields__
     )
+
+
+def test_evaluation_distinguishes_scope_rejection_from_timeout():
+    cross_tenant = asyncio.run(run_case(_case("cross_tenant_work_order")))
+    wrong_property = asyncio.run(run_case(_case("wrong_property_work_order")))
+    timeout = asyncio.run(run_case(_case("tool_timeout")))
+
+    assert cross_tenant.passed
+    assert wrong_property.passed
+    assert timeout.passed
+    assert cross_tenant.actual.failure_class == "tool_error"
+    assert wrong_property.actual.failure_class == "tool_error"
+    assert timeout.actual.failure_class == "tool_timeout"
+    assert cross_tenant.actual.error_code == "cross_tenant"
+    assert wrong_property.actual.error_code == "wrong_property"
+    assert timeout.actual.error_code == "tool_timeout"
+    assert cross_tenant.actual.error_code != timeout.actual.error_code

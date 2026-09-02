@@ -78,7 +78,10 @@ def build_agent_graph(runtime: AsyncAgentRuntime) -> StateGraph:
         return update
 
     async def tool_node(state: GraphState) -> dict:
-        agent, attempt_class, response = await runtime._tool_step(state["agent"])
+        agent, attempt_class, response = await runtime._tool_step(
+            state["agent"],
+            state["request_ctx"],
+        )
         update: dict = {"agent": agent, "attempt_class": attempt_class}
         if response is not None:
             update["response"] = response

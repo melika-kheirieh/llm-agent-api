@@ -5,6 +5,7 @@ from app.agent.contracts import AgentAction, AgentRequest
 from app.agent.router import AgentRouter
 from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 from app.tools.work_order import WorkOrderLookupTool
 
 
@@ -25,7 +26,7 @@ class RecordingTool:
         self.results = [result] if isinstance(result, ToolResult) else list(result)
         self.calls: list[dict] = []
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         self.calls.append(arguments)
         index = min(len(self.calls) - 1, len(self.results) - 1)
         return self.results[index]
@@ -58,11 +59,7 @@ def test_use_tool_path_executes_tool_and_verifier(mocker):
     tool = RecordingTool(
         ToolResult(
             success=True,
-            data={
-                "work_order_id": "WO-123",
-                "status": "open",
-                "issue_type": "plumbing",
-            },
+            data=scoped_work_order_data(),
         )
     )
     verifier = ToolVerifier()
@@ -74,7 +71,9 @@ def test_use_tool_path_executes_tool_and_verifier(mocker):
         verifier=verifier,
     )
 
-    result = asyncio.run(runtime.run("Check work order WO-123"))
+    result = asyncio.run(
+        runtime.run("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert tool.calls == [{"work_order_id": "WO-123"}]
     spy.assert_called_once()
@@ -121,21 +120,29 @@ def test_router_extracts_work_order_id():
     assert decision.arguments == {"work_order_id": "WO-99"}
 
 
+def test_router_extracts_policy_issue_type():
+    decision = AgentRouter().decide(
+        AgentRequest(message="Check maintenance policy for plumbing", metadata={})
+    )
+
+    assert decision.action == AgentAction.USE_TOOL
+    assert decision.tool_name == "maintenance_policy_lookup"
+    assert decision.arguments == {"issue_type": "plumbing"}
+
+
 def test_tool_success_observation_reaches_final_response():
     llm = FakeLLM("should not be used")
     tool = RecordingTool(
         ToolResult(
             success=True,
-            data={
-                "work_order_id": "WO-123",
-                "status": "open",
-                "issue_type": "plumbing",
-            },
+            data=scoped_work_order_data(),
         )
     )
     runtime = _runtime(llm, tool)
 
-    result = asyncio.run(runtime.run("Check work order WO-123"))
+    result = asyncio.run(
+        runtime.run("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert result == "Work order WO-123 is open (plumbing)."
     assert llm.prompts == []
@@ -148,17 +155,15 @@ def test_retryable_failure_retries_once_then_succeeds():
             ToolResult(success=False, data={"error": "temporary"}, retryable=True),
             ToolResult(
                 success=True,
-                data={
-                    "work_order_id": "WO-123",
-                    "status": "open",
-                    "issue_type": "plumbing",
-                },
+                data=scoped_work_order_data(),
             ),
         ]
     )
     runtime = _runtime(llm, tool)
 
-    result = asyncio.run(runtime.run("Check work order WO-123"))
+    result = asyncio.run(
+        runtime.run("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert len(tool.calls) == 2
     assert result == "Work order WO-123 is open (plumbing)."

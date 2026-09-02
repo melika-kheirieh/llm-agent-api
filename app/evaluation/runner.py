@@ -16,7 +16,7 @@ from app.infra.container import create_router
 from app.infra.errors import AgentFailure, DatabaseError
 from app.observability.events import event_names as names_of
 from app.observability.trace import trace_from_state
-from app.tools.work_order import WorkOrderLookupTool
+from app.tools.catalog import build_default_tools, scoped_work_order_data
 
 
 class _EvaluationLLM:
@@ -33,13 +33,17 @@ class _TimeoutLLM:
 class ScriptedTool:
     """Deterministic fake tool for evaluation cases. No external I/O."""
 
-    name = "work_order_lookup"
-
-    def __init__(self, results: tuple[ToolResult, ...] | list[ToolResult]):
+    def __init__(
+        self,
+        results: tuple[ToolResult, ...] | list[ToolResult],
+        *,
+        name: str = "work_order_lookup",
+    ):
+        self.name = name
         self._results = list(results)
         self.calls: list[dict] = []
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         self.calls.append(arguments)
         index = min(len(self.calls) - 1, len(self._results) - 1)
         return self._results[index]
@@ -50,13 +54,15 @@ class DelayedScriptedTool(ScriptedTool):
         self,
         results: tuple[ToolResult, ...] | list[ToolResult],
         delay_seconds: float,
+        *,
+        name: str = "work_order_lookup",
     ):
-        super().__init__(results)
+        super().__init__(results, name=name)
         self.delay_seconds = delay_seconds
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         await asyncio.sleep(self.delay_seconds)
-        return await super().execute(arguments)
+        return await super().execute(arguments, trusted_scope=trusted_scope)
 
 
 class _RoutingAwareLLM:
@@ -83,22 +89,17 @@ def _tools_for_case(case: EvaluationCase) -> dict[str, AgentTool] | None:
         return {}
     results = case.tool_results
     if case.tool_delay_seconds is not None:
-        payload = results or (
-            ToolResult(
-                success=True,
-                data={
-                    "work_order_id": "WO-123",
-                    "status": "open",
-                    "issue_type": "plumbing",
-                },
-            ),
+        payload = results or (ToolResult(success=True, data=scoped_work_order_data()),)
+        delayed = DelayedScriptedTool(
+            payload,
+            case.tool_delay_seconds,
+            name=case.scripted_tool_name,
         )
-        delayed = DelayedScriptedTool(payload, case.tool_delay_seconds)
         return {delayed.name: delayed}
     if results is not None:
-        scripted = ScriptedTool(results)
+        scripted = ScriptedTool(results, name=case.scripted_tool_name)
         return {scripted.name: scripted}
-    return None
+    return build_default_tools()
 
 
 def build_evaluation_runtime(
@@ -113,9 +114,6 @@ def build_evaluation_runtime(
 def _runtime_for_case(case: EvaluationCase) -> AsyncAgentRuntime:
     timeout = float(settings.llm_timeout_seconds)
     tools = _tools_for_case(case)
-    if tools is None:
-        work_order = WorkOrderLookupTool()
-        tools = {work_order.name: work_order}
     llm = _llm_for_case(case)
     model_timeout = (
         timeout if case.model_timeout_seconds is None else case.model_timeout_seconds
@@ -159,6 +157,7 @@ def trajectory_from_state(state: AgentState) -> Trajectory:
         outcome=trace.outcome,
         terminal_status=trace.terminal_status,
         event_names=names_of(state.events),
+        error_code=trace.error_code,
     )
 
 
@@ -168,7 +167,10 @@ async def run_case(
 ) -> EvaluationResult:
     agent = runtime or _runtime_for_case(case)
     try:
-        _answer, state = await agent.run_detailed(case.message)
+        _answer, state = await agent.run_detailed(
+            case.message,
+            trusted_scope=case.trusted_scope,
+        )
     except DatabaseError:
         raise
     except AgentFailure as exc:

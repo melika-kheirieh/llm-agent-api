@@ -6,7 +6,8 @@ from app.agent.llm_router import ROUTING_PROMPT_MARKER, LlmAgentRouter
 from app.agent.router import AgentRouter
 from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
-from app.tools.work_order import WorkOrderLookupTool, WorkOrderResult
+from app.tools.catalog import DEFAULT_SCOPE
+from app.tools.work_order import WorkOrderLookupTool
 
 
 class FakeLLM:
@@ -116,7 +117,7 @@ def test_untrusted_tool_data_is_not_promoted():
     class Scripted:
         name = "work_order_lookup"
 
-        async def execute(self, arguments: dict) -> ToolResult:
+        async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
             return tool_result
 
     runtime = AsyncAgentRuntime(
@@ -126,7 +127,7 @@ def test_untrusted_tool_data_is_not_promoted():
         verifier=ToolVerifier(),
     )
     _answer, state = asyncio.run(
-        runtime.run_detailed("Check work order WO-123")
+        runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
     )
 
     assert state.verification_result is False
@@ -137,18 +138,18 @@ def test_untrusted_tool_data_is_not_promoted():
 def test_verified_tool_evidence_is_trusted():
     runtime = _runtime()
     _answer, state = asyncio.run(
-        runtime.run_detailed("Check work order WO-123")
+        runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
     )
 
     evidence = state.context.answer.evidence
     assert len(evidence) == 1
     assert evidence[0].trusted is True
-    assert evidence[0].data == WorkOrderResult(
-        work_order_id="WO-123",
-        status="open",
-        issue_type="plumbing",
-    ).as_data()
-    assert state.context.trusted_scope == TrustedScope()
+    assert "tenant_id" not in evidence[0].data
+    assert "property_id" not in evidence[0].data
+    assert evidence[0].data["work_order_id"] == "WO-123"
+    assert evidence[0].data["status"] == "open"
+    assert state.observations[0].data["tenant_id"] == DEFAULT_SCOPE.tenant_id
+    assert state.context.trusted_scope == DEFAULT_SCOPE
 
 
 def test_backend_scope_is_not_overridden_by_tool_or_llm():
@@ -163,6 +164,11 @@ def test_backend_scope_is_not_overridden_by_tool_or_llm():
 
     assert state.context.trusted_scope == scope
     assert state.decision.arguments == {"work_order_id": "WO-123"}
+    assert "tenant_id" not in (state.decision.arguments or {})
+    assert "property_id" not in (state.decision.arguments or {})
+    assert state.verification_result is False
+    assert state.observations[0].data.get("error") == "cross_tenant"
+    assert "status" not in state.observations[0].data
 
 
 def test_router_prompt_omits_history_used_for_answers():

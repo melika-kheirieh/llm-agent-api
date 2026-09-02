@@ -6,9 +6,13 @@ from app.agent.schemas import RoutingOutput
 from app.infra.errors import AgentFailure, ModelError, ModelTimeout, RoutingError
 from app.llm.async_base import AsyncLLMClient
 from app.llm.structured import generate_structured_from
+from app.tools.maintenance_policy import (
+    ALLOWED_ISSUE_TYPES,
+    MaintenancePolicyRequest,
+)
 from app.tools.work_order import WorkOrderLookupRequest
 
-ALLOWED_ROUTE_TOOLS = frozenset({"work_order_lookup"})
+ALLOWED_ROUTE_TOOLS = frozenset({"work_order_lookup", "maintenance_policy_lookup"})
 ROUTING_PROMPT_MARKER = "Respond with a JSON routing decision only."
 
 
@@ -65,6 +69,8 @@ def _validate_tool_arguments(
     raw = arguments if arguments is not None else {}
     if tool_name == "work_order_lookup":
         return _validate_work_order_arguments(raw)
+    if tool_name == "maintenance_policy_lookup":
+        return _validate_policy_arguments(raw)
     raise RoutingError(
         "Invalid tool selection",
         decision=AgentDecision(
@@ -92,6 +98,26 @@ def _validate_work_order_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         if typed.work_order_id is None:
             raise RoutingError("Invalid routing arguments", decision=decision)
         return {"work_order_id": typed.work_order_id}
+    return {}
+
+
+def _validate_policy_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    decision = AgentDecision(
+        action=AgentAction.USE_TOOL,
+        tool_name="maintenance_policy_lookup",
+        arguments=arguments,
+    )
+    extra = set(arguments) - {"issue_type"}
+    if extra:
+        raise RoutingError("Invalid routing arguments", decision=decision)
+    if "issue_type" in arguments:
+        value = arguments["issue_type"]
+        if not isinstance(value, str) or not value.strip():
+            raise RoutingError("Invalid routing arguments", decision=decision)
+        typed = MaintenancePolicyRequest.from_arguments(arguments)
+        if typed.issue_type is None or typed.issue_type not in ALLOWED_ISSUE_TYPES:
+            raise RoutingError("Invalid routing arguments", decision=decision)
+        return {"issue_type": typed.issue_type}
     return {}
 
 

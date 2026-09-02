@@ -13,6 +13,7 @@ from app.evaluation.agent_cases import (
 )
 from app.infra.errors import FailureClass
 from app.observability.events import event_names
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 class FakeLLM:
@@ -32,7 +33,7 @@ class RecordingTool:
         self.results = [result] if isinstance(result, ToolResult) else list(result)
         self.calls: list[dict] = []
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         self.calls.append(arguments)
         index = min(len(self.calls) - 1, len(self.results) - 1)
         return self.results[index]
@@ -49,14 +50,7 @@ def _runtime(llm: FakeLLM, tool: RecordingTool | None = None) -> AsyncAgentRunti
 
 
 def _valid_result(work_order_id: str = "WO-123") -> ToolResult:
-    return ToolResult(
-        success=True,
-        data={
-            "work_order_id": work_order_id,
-            "status": "open",
-            "issue_type": "plumbing",
-        },
-    )
+    return ToolResult(success=True, data=scoped_work_order_data(work_order_id))
 
 
 def test_direct_path_returns_llm_answer_without_tools():
@@ -78,7 +72,7 @@ def test_tool_success_path_skips_llm():
     tool = RecordingTool(_valid_result())
     runtime = _runtime(llm, tool)
 
-    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE))
 
     assert answer == "Work order WO-123 is open (plumbing)."
     assert llm.prompts == []
@@ -102,7 +96,7 @@ def test_verification_failure_path_goes_to_review():
     )
     runtime = _runtime(llm, tool)
 
-    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE))
 
     assert answer == "The request could not be verified."
     assert llm.prompts == []
@@ -132,7 +126,7 @@ def test_retry_path_succeeds_on_second_attempt():
     )
     runtime = _runtime(llm, tool)
 
-    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE))
 
     assert answer == "Work order WO-123 is open (plumbing)."
     assert llm.prompts == []
@@ -151,7 +145,7 @@ def test_terminal_failure_path_stops_after_recovery():
     )
     runtime = _runtime(llm, tool)
 
-    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE))
 
     assert answer == "The request could not be verified."
     assert llm.prompts == []

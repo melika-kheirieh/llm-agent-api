@@ -11,11 +11,15 @@ class EvaluationResult:
 
     @property
     def passed(self) -> bool:
-        if self.expected.event_names is None:
-            return replace(self.expected, event_names=None) == replace(
-                self.actual, event_names=None
-            )
-        return self.expected == self.actual
+        expected = self.expected
+        actual = self.actual
+        if expected.event_names is None:
+            expected = replace(expected, event_names=None)
+            actual = replace(actual, event_names=None)
+        if expected.error_code is None:
+            expected = replace(expected, error_code=None)
+            actual = replace(actual, error_code=None)
+        return expected == actual
 
 
 @dataclass(frozen=True)

@@ -59,7 +59,7 @@ save_chat_and_trace()  — one AsyncSession, one commit
 2. Validate input (reject missing or empty message)
 3. `AsyncAgentRuntime` runs the request on a compiled in-process graph:
    * **DIRECT** — `route_node` → `answer_node` (async LLM provider)
-   * **USE_TOOL** — `tool_node` (`work_order_lookup`) → `verify_node` → `answer_node` or `recovery_node`
+   * **USE_TOOL** — `tool_node` (`work_order_lookup` or `maintenance_policy_lookup`) → `verify_node` → `answer_node` or `recovery_node`
    * Unverified or exhausted retries return `"The request could not be verified."`
 4. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
 5. Return `{ "response" }` only
@@ -80,11 +80,11 @@ failure class — not answer text.
 The live runtime is explicit. LangGraph selects the next node; it does not replace the components:
 
 * **Graph** — `app/agent/graph.py`. `GraphState` wraps `AgentState`. No checkpointer, no multi-agent graph, no RAG.
-* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` asks the provider for a typed `RoutingOutput`, then checks allowed tools and domain arguments. It is not an LLM planner for the rest of the loop.
+* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"policy"` → `maintenance_policy_lookup`; `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` asks the provider for a typed `RoutingOutput`, then checks allowed tools and domain arguments. It is not an LLM planner for the rest of the loop.
 * **Structured output** — `AsyncLLMClient.generate_structured(prompt, schema)` returns a Pydantic instance. JSON parse and schema validation live in the provider layer (`app/llm/structured.py`). Callers do not `json.loads` model text.
-* **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
+* **Tools** — async `AgentTool.execute(arguments, *, trusted_scope)`. `TrustedScope` is backend-provided and never taken from model arguments. `work_order_lookup` and `maintenance_policy_lookup` query an in-process catalog by scope + id/issue type.
 * **Observation** — tool outcome attached to `AgentState`
-* **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
+* **Verification** — per-tool domain gate. Work orders: requested id, tenant/property match, required fields, allowed status. Policies: scope, required fields, version, freshness window, allowed action. Unknown tools never verify.
 * **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures (including tool timeouts), then human review. `ESCALATE` and `FAIL` both surface as the same review message today
 * **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
 * **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
@@ -127,8 +127,8 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 * Schema validation → `422`
 * Unknown `run_id` → `404`
 * Upstream model failure or model timeout → `502`
-* Tool timeout / tool error / verification failure → `200` with the review message; `failure_class` on the trace
-* Persistence failure (chat write, trace write, `/ready`) → `503`
+* Tool timeout / retryable tool error / verification failure → `200` with the review message; `failure_class` on the trace
+* Domain/security tool rejection (cross-tenant, wrong-property, missing scope) → same HTTP review path and `failure_class=tool_error`, distinguished by in-memory `error_code` (`cross_tenant`, `wrong_property`, …). Not a new `FailureClass`. Timeouts stay `tool_timeout`.
 * Persistence failure (chat write, trace write, `/ready`) → `503`
 * Unexpected internal error → `500`
 * Invalid environment → process fails at startup
@@ -155,7 +155,13 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 OpenAI tries native JSON-object formatting, then falls back to `generate()` plus parse if that request fails or returns empty text. Ollama sends `format=json` and falls back the same way on provider `ModelError` (HTTP/empty), not on parse failure. Timeouts and cancellation never fall back. Plain `generate()` is unchanged. Duck-typed fakes that only implement `generate()` still work through `generate_structured_from`.
 
-**Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a domain gate (required fields, requested-id match, allowed status) so unverified output cannot be returned as if it were. It is **not** a second model.
+**Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` dispatches to a work-order gate or a policy gate (required fields, scope match, allowed status/action, policy freshness). It is **not** a second model and it does not accept unknown tools.
+
+**Why TrustedScope is not in tool arguments?** Authorization is a backend fact. If `tenant_id` / `property_id` lived in model-generated arguments, the router could be talked into another tenant. Tools receive `TrustedScope` as a separate keyword argument; extra scope keys in routing JSON are a `RoutingError`.
+
+**Why sanitize tool evidence?** Verified observations still contain tenant/property so the verifier can check scope. Answer context is a different audience: `ToolEvidence` drops those fields. Raw observations stay on `AgentState` for debugging. Traces log `error_code`, not `tenant_id`.
+
+**Why no new FailureClass for cross-tenant?** Operational failures (timeout, retryable tool error) and domain/security rejections (cross-tenant, wrong-property) already diverge on retryability and payload. They share `tool_error` when the tool returns an envelope failure. Evaluation uses `error_code` plus `failure_class` so a cross-tenant run cannot match a timeout (`tool_timeout` / `error_code=tool_timeout`).
 
 **Why bounded retries?** Transient tool failures should retry once (`max_attempts=2`) and then stop. Unbounded loops hide bugs and burn the provider. After the budget, the run goes to human review with a fixed message.
 

@@ -7,7 +7,7 @@ from app.agent.tools import AgentTool
 from app.agent.verification import ToolVerifier
 from app.infra.config import ROUTER_MODE_LLM, normalize_router_mode, settings
 from app.llm.async_base import AsyncLLMClient
-from app.tools.work_order import WorkOrderLookupTool
+from app.tools.catalog import build_default_tools
 
 _runtime: AsyncAgentRuntime | None = None
 
@@ -37,8 +37,7 @@ def _build_llm() -> AsyncLLMClient:
 
 
 def _build_tools() -> dict[str, AgentTool]:
-    work_order = WorkOrderLookupTool()
-    return {work_order.name: work_order}
+    return build_default_tools()
 
 
 def create_router(

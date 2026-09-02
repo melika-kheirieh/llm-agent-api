@@ -218,3 +218,9 @@ def test_llm_invalid_arguments_trajectory():
     assert result.actual.failure_class == "model_error"
     assert result.actual.outcome == "failure"
     assert result.passed
+
+
+def test_all_default_cases_pass():
+    for case in DEFAULT_CASES:
+        result = asyncio.run(run_case(case))
+        assert result.passed, (case.name, result.expected, result.actual)

@@ -9,6 +9,7 @@ from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import close_runtime, get_agent, init_runtime
 from app.infra.errors import ModelTimeout
 from app.main import app
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 class SlowLLM:
@@ -159,18 +160,14 @@ class _ValidWorkOrderTool:
         self.delay = delay
         self.calls = 0
 
-    async def execute(self, arguments: dict):
+    async def execute(self, arguments: dict, *, trusted_scope=None):
         from app.agent.tools import ToolResult
 
         self.calls += 1
         await asyncio.sleep(self.delay)
         return ToolResult(
             success=True,
-            data={
-                "work_order_id": arguments.get("work_order_id", "WO-123"),
-                "status": "open",
-                "issue_type": "plumbing",
-            },
+            data=scoped_work_order_data(arguments.get("work_order_id", "WO-123")),
         )
 
 
@@ -186,7 +183,9 @@ def test_tool_timeout_is_not_model_timeout():
         tools={tool.name: tool},
     )
 
-    answer, state = asyncio.run(runtime.run_detailed("Check work order WO-123"))
+    answer, state = asyncio.run(
+        runtime.run_detailed("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
     trace = trace_from_state(state)
 
     assert answer == "The request could not be verified."
@@ -205,7 +204,9 @@ def test_slow_tool_does_not_trip_model_timeout():
         tools={tool.name: tool},
     )
 
-    answer = asyncio.run(runtime.run("Check work order WO-123"))
+    answer = asyncio.run(
+        runtime.run("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert answer == "Work order WO-123 is open (plumbing)."
     assert tool.calls == 1

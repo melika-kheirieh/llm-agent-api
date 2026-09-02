@@ -2,6 +2,7 @@ import re
 from typing import Protocol
 
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
+from app.tools.maintenance_policy import ALLOWED_ISSUE_TYPES
 
 _WORK_ORDER_ID = re.compile(r"\bWO-?\d+\b", re.IGNORECASE)
 _WORK_ORDER_NUMERIC = re.compile(r"work order\s+(\d+)", re.IGNORECASE)
@@ -18,6 +19,14 @@ def extract_work_order_id(message: str) -> str | None:
     match = _WORK_ORDER_NUMERIC.search(message)
     if match:
         return match.group(1)
+    return None
+
+
+def extract_issue_type(message: str) -> str | None:
+    lower = message.lower()
+    for issue in sorted(ALLOWED_ISSUE_TYPES, key=len, reverse=True):
+        if issue in lower:
+            return issue
     return None
 
 
@@ -39,6 +48,15 @@ class AgentRouter:
 
     def decide(self, request: AgentRequest) -> AgentDecision:
         message = request.message.lower()
+
+        if "policy" in message:
+            issue_type = extract_issue_type(request.message)
+            arguments = {"issue_type": issue_type} if issue_type else {}
+            return AgentDecision(
+                action=AgentAction.USE_TOOL,
+                tool_name="maintenance_policy_lookup",
+                arguments=arguments,
+            )
 
         if "work order" in message or "maintenance" in message:
             work_order_id = extract_work_order_id(request.message)

@@ -19,6 +19,7 @@ from app.infra.container import build_runtime
 from app.infra.errors import FailureClass, ModelError, RoutingError
 from app.observability.events import TraceEventName
 from app.observability.trace import trace_from_state
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 class RoutingFakeLLM:
@@ -63,7 +64,7 @@ class RecordingTool:
         self.result = result
         self.calls: list[dict] = []
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         self.calls.append(arguments)
         return self.result
 
@@ -72,11 +73,7 @@ def _success_tool() -> RecordingTool:
     return RecordingTool(
         ToolResult(
             success=True,
-            data={
-                "work_order_id": "WO-123",
-                "status": "open",
-                "issue_type": "plumbing",
-            },
+            data=scoped_work_order_data(),
         )
     )
 
@@ -118,6 +115,30 @@ def test_decision_rejects_unknown_tool():
     assert exc.value.decision.action == AgentAction.USE_TOOL
     assert exc.value.decision.tool_name == "billing_lookup"
     assert exc.value.decision.arguments == {}
+
+
+def test_decision_rejects_scope_fields_in_tool_arguments():
+    with pytest.raises(RoutingError, match="Invalid routing arguments"):
+        decision_from_routing_output(
+            RoutingOutput(
+                action=AgentAction.USE_TOOL,
+                tool_name="work_order_lookup",
+                arguments={"work_order_id": "WO-123", "tenant_id": "tenant-a"},
+            )
+        )
+
+
+def test_decision_from_policy_lookup_output():
+    decision = decision_from_routing_output(
+        RoutingOutput(
+            action=AgentAction.USE_TOOL,
+            tool_name="maintenance_policy_lookup",
+            arguments={"issue_type": "plumbing"},
+        )
+    )
+
+    assert decision.tool_name == "maintenance_policy_lookup"
+    assert decision.arguments == {"issue_type": "plumbing"}
 
 
 def test_decision_rejects_non_string_work_order_id():
@@ -198,7 +219,9 @@ def test_llm_router_can_select_work_order_lookup():
         verifier=ToolVerifier(),
     )
 
-    result = asyncio.run(runtime.run("hello there"))
+    result = asyncio.run(
+        runtime.run("hello there", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert result == "Work order WO-123 is open (plumbing)."
     assert tool.calls == [{"work_order_id": "WO-123"}]

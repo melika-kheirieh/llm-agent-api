@@ -14,6 +14,7 @@ from app.evaluation.agent_cases import (
 )
 from app.observability.events import TraceEventName
 from app.observability.trace import ExecutionTrace
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 class FakeLLM:
@@ -28,7 +29,7 @@ class RecordingTool:
         self.results = [result] if isinstance(result, ToolResult) else list(result)
         self.calls: list[dict] = []
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         self.calls.append(arguments)
         index = min(len(self.calls) - 1, len(self.results) - 1)
         return self.results[index]
@@ -58,14 +59,41 @@ def test_successful_tool_run_emits_expected_events():
     tool = RecordingTool(
         ToolResult(
             success=True,
-            data={"work_order_id": "WO-123", "status": "open", "issue_type": "plumbing"},
+            data=scoped_work_order_data(),
         )
     )
     runtime = _runtime(tool)
-    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert _event_names(trace) == TOOL_SUCCESS_EVENTS
     assert trace.events[2].metadata["attempt"] == 1
+    assert trace.error_code is None
+    assert trace.as_log_fields()["error_code"] is None
+
+
+def test_scope_rejection_log_fields_use_error_code_not_scope():
+    tool = RecordingTool(
+        ToolResult(success=False, data={"error": "cross_tenant"}, retryable=False)
+    )
+    runtime = _runtime(tool)
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-999", trusted_scope=DEFAULT_SCOPE)
+    )
+
+    fields = trace.as_log_fields()
+    assert _event_names(trace) == TOOL_FAILURE_EVENTS
+    assert fields["failure_class"] == "tool_error"
+    assert fields["error_code"] == "cross_tenant"
+    assert "tenant_id" not in fields
+    assert "property_id" not in fields
+    failed = next(
+        event for event in trace.events if event.name == TraceEventName.TOOL_FAILED.value
+    )
+    assert failed.metadata["error"] == "cross_tenant"
+    assert "tenant_id" not in failed.metadata
+    assert "property_id" not in failed.metadata
 
 
 def test_retry_flow_contains_recovery_retry_event():
@@ -74,16 +102,14 @@ def test_retry_flow_contains_recovery_retry_event():
             ToolResult(success=False, data={"error": "temporary"}, retryable=True),
             ToolResult(
                 success=True,
-                data={
-                    "work_order_id": "WO-123",
-                    "status": "open",
-                    "issue_type": "plumbing",
-                },
+                data=scoped_work_order_data(),
             ),
         ]
     )
     runtime = _runtime(tool)
-    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     names = _event_names(trace)
     assert names == RETRY_THEN_SUCCESS_EVENTS
@@ -92,6 +118,7 @@ def test_retry_flow_contains_recovery_retry_event():
         event for event in trace.events if event.name == TraceEventName.RECOVERY_DECISION.value
     )
     assert recovery.metadata["action"] == "retry"
+    assert trace.error_code is None
 
 
 def test_failure_flow_contains_run_failed_event():
@@ -159,11 +186,13 @@ def test_successful_tool_run_includes_tool_and_verification():
     tool = RecordingTool(
         ToolResult(
             success=True,
-            data={"work_order_id": "WO-123", "status": "open", "issue_type": "plumbing"},
+            data=scoped_work_order_data(),
         )
     )
     runtime = _runtime(tool)
-    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert trace.terminal_status == AgentStatus.COMPLETED.value
     assert trace.decision == "use_tool"
@@ -197,16 +226,14 @@ def test_retry_path_reports_attempt_count():
             ToolResult(success=False, data={"error": "temporary"}, retryable=True),
             ToolResult(
                 success=True,
-                data={
-                    "work_order_id": "WO-123",
-                    "status": "open",
-                    "issue_type": "plumbing",
-                },
+                data=scoped_work_order_data(),
             ),
         ]
     )
     runtime = _runtime(tool)
-    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     assert len(tool.calls) == 2
     assert trace.terminal_status == AgentStatus.COMPLETED.value
@@ -228,7 +255,9 @@ def test_llm_router_trace_exposes_router_type_and_timing():
 
     llm = RoutingFakeLLM()
     runtime = AsyncAgentRuntime(llm, router=LlmAgentRouter(llm))
-    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+    _answer, trace = asyncio.run(
+        runtime.run_with_trace("Check work order WO-123", trusted_scope=DEFAULT_SCOPE)
+    )
 
     fields = trace.as_log_fields()
     assert trace.router_type == "llm"

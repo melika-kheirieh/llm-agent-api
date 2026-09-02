@@ -27,6 +27,7 @@ from app.infra.errors import (
 from app.llm.async_base import AsyncLLMClient
 from app.observability.events import TraceEventName
 from app.observability.trace import ExecutionTrace, trace_from_state
+from app.tools.maintenance_policy import MaintenancePolicyObservation
 from app.tools.work_order import WorkOrderObservation
 
 _REVIEW_RESPONSE = "The request could not be verified."
@@ -258,7 +259,7 @@ class AsyncAgentRuntime:
         return state, None, _REVIEW_RESPONSE
 
     async def _tool_step(
-        self, state: AgentState
+        self, state: AgentState, request_ctx: RequestContext
     ) -> tuple[AgentState, FailureClass | None, str | None]:
         decision = state.decision
         tool = self.tools.get(decision.tool_name or "")
@@ -285,7 +286,10 @@ class AsyncAgentRuntime:
         )
         try:
             async with asyncio.timeout(self.tool_timeout_seconds):
-                result = await tool.execute(arguments)
+                result = await tool.execute(
+                    arguments,
+                    trusted_scope=request_ctx.trusted_scope,
+                )
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -302,6 +306,12 @@ class AsyncAgentRuntime:
                 retryable=False,
             )
             attempt_class = FailureClass.TOOL_ERROR
+
+        error_code = None
+        if isinstance(result.data, dict):
+            raw_error = result.data.get("error")
+            if isinstance(raw_error, str):
+                error_code = raw_error
 
         if result.success:
             state = state.record(
@@ -320,6 +330,7 @@ class AsyncAgentRuntime:
                 tool_name=tool.name,
                 attempt=attempt,
                 failure_class=failed_class,
+                error=error_code,
             )
 
         observation = Observation(
@@ -344,7 +355,12 @@ class AsyncAgentRuntime:
         decision = state.decision
         arguments = decision.arguments or {}
         result = state.tool_result
-        verified = self.verifier.verify(result, arguments)
+        verified = self.verifier.verify(
+            result,
+            arguments,
+            tool_name=decision.tool_name,
+            trusted_scope=request_ctx.trusted_scope,
+        )
         agent_ctx = self.context_policy.assemble(
             request_ctx,
             observations=state.observations,
@@ -440,6 +456,14 @@ class AsyncAgentRuntime:
 
 
 def _format_tool_answer(observation: Observation) -> str:
+    if observation.tool_name == "maintenance_policy_lookup":
+        policy = MaintenancePolicyObservation.from_data(observation.data)
+        if policy is None:
+            return "Tool execution completed."
+        return (
+            f"{policy.issue_type} policy allows {policy.allowed_action} "
+            f"(SLA {policy.response_sla})."
+        )
     parsed = WorkOrderObservation.from_data(observation.data)
     if parsed is None:
         return "Tool execution completed."

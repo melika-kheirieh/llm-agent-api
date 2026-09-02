@@ -23,6 +23,7 @@ class ExecutionTrace:
     thread_id: str | None = None
     recovery_decision: str | None = None
     router_type: str | None = None
+    error_code: str | None = None
     events: tuple[TraceEvent, ...] = ()
 
     def as_log_fields(self) -> dict:
@@ -38,6 +39,7 @@ class ExecutionTrace:
             "retry_count": self.retry_count,
             "outcome": self.outcome,
             "failure_class": self.failure_class,
+            "error_code": self.error_code,
             "recovery_decision": self.recovery_decision,
             "thread_id": self.thread_id,
             "event_names": list(event_names(self.events)),
@@ -96,8 +98,32 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
         recovery_decision=recovery_decision,
         router_type=state.router_type,
         thread_id=thread_id,
+        error_code=terminal_error_code(state),
         events=state.events,
     )
+
+
+def terminal_error_code(state: AgentState) -> str | None:
+    """Tool error token for a non-success run. None on completed runs.
+
+    Domain/security rejections (cross_tenant, wrong_property) stay
+    FailureClass.TOOL_ERROR; this code is how eval tells them apart from
+    timeouts and retryable tool failures. Does not include tenant/property.
+    """
+    if state.status == AgentStatus.COMPLETED:
+        return None
+    for event in reversed(state.events):
+        if event.name == TraceEventName.TOOL_FAILED.value:
+            code = event.metadata.get("error")
+            if isinstance(code, str) and code:
+                return code
+            break
+    result = state.tool_result
+    if result is not None and not result.success and isinstance(result.data, dict):
+        code = result.data.get("error")
+        if isinstance(code, str) and code:
+            return code
+    return None
 
 
 def routing_duration_ms(events: tuple[TraceEvent, ...]) -> float | None:

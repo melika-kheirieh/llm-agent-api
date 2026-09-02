@@ -46,7 +46,11 @@ class RoutingContext:
 
 @dataclass(frozen=True)
 class ToolEvidence:
-    """Verified tool payload allowed to influence the answer. trusted is always True."""
+    """Verified tool payload allowed to influence the answer. trusted is always True.
+
+    Authorization fields (tenant_id, property_id) are stripped. Raw observations
+    stay on AgentState for debugging.
+    """
 
     tool_name: str
     data: dict[str, Any]
@@ -191,5 +195,17 @@ def _trusted_evidence(
     if not last.success:
         return ()
     return (
-        ToolEvidence(tool_name=last.tool_name, data=dict(last.data), trusted=True),
+        ToolEvidence(
+            tool_name=last.tool_name,
+            data=sanitize_evidence_data(last.data),
+            trusted=True,
+        ),
     )
+
+
+_SCOPE_EVIDENCE_KEYS = frozenset({"tenant_id", "property_id"})
+
+
+def sanitize_evidence_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Copy tool data for answer context without authorization fields."""
+    return {key: value for key, value in data.items() if key not in _SCOPE_EVIDENCE_KEYS}

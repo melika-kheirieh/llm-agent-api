@@ -7,6 +7,7 @@ from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
 from app.db.repo import get_trace, init_db, save_trace
 from app.observability.trace import ExecutionTrace
+from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
 
 class FakeLLM:
@@ -20,7 +21,7 @@ class RecordingTool:
     def __init__(self, result: ToolResult):
         self.result = result
 
-    async def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict, *, trusted_scope=None) -> ToolResult:
         return self.result
 
 
@@ -34,10 +35,12 @@ def _runtime(tool: RecordingTool | None = None) -> AsyncAgentRuntime:
     )
 
 
-def _persist_and_load(runtime: AsyncAgentRuntime, message: str) -> dict:
+def _persist_and_load(
+    runtime: AsyncAgentRuntime, message: str, **run_kwargs
+) -> dict:
     async def _run():
         await init_db()
-        _answer, trace = await runtime.run_with_trace(message)
+        _answer, trace = await runtime.run_with_trace(message, **run_kwargs)
         await save_trace(trace)
         stored = await get_trace(trace.run_id)
         return trace, stored
@@ -63,10 +66,14 @@ def test_tool_success_persists_trace():
     tool = RecordingTool(
         ToolResult(
             success=True,
-            data={"work_order_id": "WO-123", "status": "open", "issue_type": "plumbing"},
+            data=scoped_work_order_data(),
         )
     )
-    _trace, stored = _persist_and_load(_runtime(tool), "Check work order WO-123")
+    _trace, stored = _persist_and_load(
+        _runtime(tool),
+        "Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
+    )
 
     assert stored["terminal_status"] == "completed"
     assert stored["decision"] == "use_tool"

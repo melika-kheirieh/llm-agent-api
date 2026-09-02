@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from app.agent.context import TrustedScope
 from app.agent.contracts import AgentAction
 from app.agent.state import AgentStatus
 from app.agent.tools import ToolResult
@@ -20,6 +21,7 @@ from app.evaluation.runner import run_case
 from app.evaluation.trajectory import Trajectory
 from app.infra.config import ROUTER_MODE_KEYWORD, ROUTER_MODE_LLM
 from app.infra.errors import FailureClass
+from app.tools.catalog import DEFAULT_SCOPE
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class RoutingScenario:
     llm_route_output: str
     llm_expected: Trajectory
     tool_results: tuple[ToolResult, ...] | None = None
+    trusted_scope: TrustedScope | None = None
 
     def keyword_case(self) -> EvaluationCase:
         return EvaluationCase(
@@ -40,6 +43,7 @@ class RoutingScenario:
             expected=self.keyword_expected,
             tool_results=self.tool_results,
             router_kind=ROUTER_MODE_KEYWORD,
+            trusted_scope=self.trusted_scope,
         )
 
     def llm_case(self) -> EvaluationCase:
@@ -50,6 +54,7 @@ class RoutingScenario:
             tool_results=self.tool_results,
             router_kind=ROUTER_MODE_LLM,
             route_output=self.llm_route_output,
+            trusted_scope=self.trusted_scope,
         )
 
 
@@ -103,6 +108,7 @@ ROUTING_COMPARISON_CASES = (
     RoutingScenario(
         name="agreement_work_order",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         keyword_expected=_WORK_ORDER_SUCCESS,
         llm_route_output=(
             '{"action": "use_tool", "tool_name": "work_order_lookup", '
@@ -113,6 +119,7 @@ ROUTING_COMPARISON_CASES = (
     RoutingScenario(
         name="disagreement_llm_skips_tool",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         keyword_expected=_WORK_ORDER_SUCCESS,
         llm_route_output='{"action": "direct", "tool_name": null, "arguments": null}',
         llm_expected=_DIRECT_SUCCESS,
@@ -140,6 +147,7 @@ ROUTING_COMPARISON_CASES = (
     RoutingScenario(
         name="llm_invalid_arguments",
         message="Check work order WO-123",
+        trusted_scope=DEFAULT_SCOPE,
         keyword_expected=_WORK_ORDER_SUCCESS,
         llm_route_output=(
             '{"action": "use_tool", "tool_name": "work_order_lookup", '

@@ -4,7 +4,7 @@ A FastAPI service that runs an async LLM agent with explicit routing, tool use, 
 
 API → `AsyncAgentRuntime` → LangGraph transitions → existing router / tools / verifier / recovery → `AsyncLLMClient` → SQLite.
 
-This is **Agent Core v1**: a real control loop, not a chat wrapper. LangGraph owns **node transitions only**. Routers, tools, verification, and recovery are unchanged. The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
+This is **Agent Core v1**: a real control loop, not a chat wrapper. LangGraph owns **node transitions only**. Tools are **scope-aware** (`TrustedScope` is never model-generated). The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. Verification is **domain-aware** per tool, not a second model.
 
 Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
 
@@ -57,7 +57,9 @@ curl -s -X POST http://127.0.0.1:8000/chat \
   -d '{"message":"Explain what an API is in one sentence"}'
 ```
 
-**Tool** (keyword route → stub `work_order_lookup`):
+**Tool** (keyword route → in-process `work_order_lookup`):
+
+`POST /chat` has no identity, so `TrustedScope` is empty and tool lookups fail closed. Tests and evaluation pass a backend scope into `AsyncAgentRuntime.run`.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/chat \
@@ -66,10 +68,10 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 ```
 
 ```json
-{"response": "Work order WO-123 is open (plumbing)."}
+{"response": "The request could not be verified."}
 ```
 
-Messages containing `"work order"` or `"maintenance"` take the tool path. Missing IDs fail verification and return `"The request could not be verified."`
+Messages containing `"policy"` take `maintenance_policy_lookup`. `"work order"` / `"maintenance"` take `work_order_lookup`. Missing IDs, cross-tenant hits, and stale policies return `"The request could not be verified."`
 
 **Trace** — `run_id` is not in the chat body. Read it from the latest `agent_runs` row or from the `chat_success` JSON log, then:
 
