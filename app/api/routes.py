@@ -26,12 +26,15 @@ async def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     try:
-        response = await agent.run(message)
+        response, trace = await agent.run_with_trace(message)
         await save_chat(message, response)
 
         logger.info(
             "chat_success",
-            extra={"message_len": len(message)},
+            extra={
+                "message_len": len(message),
+                **trace.as_log_fields(),
+            },
         )
 
         return {"response": response}

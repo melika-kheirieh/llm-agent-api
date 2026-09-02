@@ -10,6 +10,7 @@ sys.path.append(str(ROOT))
 from app.infra.container import get_agent  # noqa: E402
 from app.infra.errors import UpstreamLLMError  # noqa: E402
 from app.main import app  # noqa: E402
+from app.observability.trace import ExecutionTrace  # noqa: E402
 
 
 class FakeAgent:
@@ -22,6 +23,16 @@ class FakeAgent:
         if self.mode == "llm_error":
             raise UpstreamLLMError("boom")
         raise RuntimeError("unexpected")
+
+    async def run_with_trace(self, message: str) -> tuple[str, ExecutionTrace]:
+        text = await self.run(message)
+        return text, ExecutionTrace(
+            run_id="test",
+            request_id="test",
+            terminal_status="completed",
+            decision="direct",
+            outcome="success",
+        )
 
 
 @pytest.fixture

@@ -12,6 +12,7 @@ from app.agent.tools import AgentTool
 from app.agent.verification import ToolVerifier
 from app.infra.errors import UpstreamLLMError
 from app.llm.async_base import AsyncLLMClient
+from app.observability.trace import ExecutionTrace, trace_from_state
 
 _REVIEW_RESPONSE = "The request could not be verified."
 
@@ -47,6 +48,10 @@ class AsyncAgentRuntime:
     async def run(self, message: str) -> str:
         answer, _state = await self.run_detailed(message)
         return answer
+
+    async def run_with_trace(self, message: str) -> tuple[str, ExecutionTrace]:
+        answer, state = await self.run_detailed(message)
+        return answer, trace_from_state(state)
 
     async def run_detailed(self, message: str) -> tuple[str, AgentState]:
         try:

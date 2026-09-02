@@ -43,6 +43,12 @@ def test_chat_internal_error(client, mocker):
         async def run(self, message: str):
             raise RuntimeError("Boom")
 
+        async def run_with_trace(self, message: str):
+            raise RuntimeError("Boom")
+
+        async def run_with_trace(self, message: str):
+            raise RuntimeError("Boom")
+
     app.dependency_overrides[get_agent] = lambda: BrokeAgent()
 
     try:

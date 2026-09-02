@@ -116,6 +116,18 @@ def test_chat_concurrent_requests_overlap(mocker):
             await asyncio.sleep(0.2)
             return f"echo: {message}"
 
+        async def run_with_trace(self, message: str):
+            from app.observability.trace import ExecutionTrace
+
+            text = await self.run(message)
+            return text, ExecutionTrace(
+                run_id="test",
+                request_id="test",
+                terminal_status="completed",
+                decision="direct",
+                outcome="success",
+            )
+
     async def _run():
         from app.infra.container import get_agent as get_agent_dep
 
