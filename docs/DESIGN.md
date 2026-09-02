@@ -77,7 +77,7 @@ The live runtime is explicit, not a hidden graph:
 * **Router** — deterministic keyword match (`"work order"` / `"maintenance"`), not an LLM planner
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
 * **Observation** — tool outcome attached to `AgentState`
-* **Verification** — structural: `result.success` and non-empty `data`. Not a second model or domain policy
+* **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
 * **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures, then human review. `ESCALATE` and `FAIL` both surface as the same review message today
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
 * **Traces** — `trace_from_state()` after each run; logged and persisted with the chat row
@@ -139,7 +139,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **Why deterministic routing instead of an LLM planner?** V1 needs a testable, cheap first boundary: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM planner would add latency, cost, and non-determinism before the first tool exists. The router is **keyword matching**, not function-calling.
 
-**Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a structural gate (`success` and non-empty `data`) so unverified output cannot be returned as if it were. It is **not** a second model or a maintenance-domain policy.
+**Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a domain gate (required fields, requested-id match, allowed status) so unverified output cannot be returned as if it were. It is **not** a second model.
 
 **Why bounded retries?** Transient tool failures should retry once (`max_attempts=2`) and then stop. Unbounded loops hide bugs and burn the provider. After the budget, the run goes to human review with a fixed message.
 

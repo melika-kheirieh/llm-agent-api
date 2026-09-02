@@ -13,6 +13,7 @@ from app.agent.verification import ToolVerifier
 from app.infra.errors import UpstreamLLMError
 from app.llm.async_base import AsyncLLMClient
 from app.observability.trace import ExecutionTrace, trace_from_state
+from app.tools.work_order import WorkOrderObservation
 
 _REVIEW_RESPONSE = "The request could not be verified."
 
@@ -96,7 +97,7 @@ class AsyncAgentRuntime:
             selected = self.context_policy.select(
                 [ContextItem(key="tool_observation", value=observation, source="tool")]
             )
-            verified = self.verifier.verify(result)
+            verified = self.verifier.verify(result, decision.arguments or {})
             attempts = state.attempts + 1
             state = replace(
                 state,
@@ -126,11 +127,8 @@ class AsyncAgentRuntime:
 
 
 def _format_tool_answer(observation: Observation) -> str:
-    data = observation.data
-    work_order_id = data.get("work_order_id")
-    status = data.get("status")
-    issue_type = data.get("issue_type")
-    if work_order_id and status:
-        issue = f" ({issue_type})" if issue_type else ""
-        return f"Work order {work_order_id} is {status}{issue}."
-    return "Tool execution completed."
+    parsed = WorkOrderObservation.from_data(observation.data)
+    if parsed is None:
+        return "Tool execution completed."
+    issue = f" ({parsed.issue_type})" if parsed.issue_type else ""
+    return f"Work order {parsed.work_order_id} is {parsed.status}{issue}."
