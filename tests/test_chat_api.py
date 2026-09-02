@@ -1,3 +1,6 @@
+from app.infra.errors import DatabaseError
+
+
 def test_chat_success(client, mocker, override_agent_ok):
     mocker.patch("app.api.routes.save_chat")
 
@@ -58,9 +61,9 @@ def test_chat_response_shape(client, mocker, override_agent_ok):
 
 
 def test_chat_persistence_failure(client, mocker, override_agent_ok):
-    mocker.patch("app.api.routes.save_chat", side_effect=RuntimeError("db down"))
+    mocker.patch("app.api.routes.save_chat", side_effect=DatabaseError("db down"))
 
     resp = client.post("/chat", json={"message": "hi"})
 
     assert resp.status_code == 503
-    assert resp.json()["detail"] == "Persistence failure"
+    assert resp.json()["detail"] == "Database unavailable"
