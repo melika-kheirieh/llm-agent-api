@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from time import time
+from dataclasses import dataclass
 
 from app.agent.contracts import AgentAction
 from app.agent.state import AgentState, AgentStatus
-
-
-@dataclass
-class TraceEvent:
-    name: str
-    metadata: dict = field(default_factory=dict)
-    timestamp: float = field(default_factory=time)
+from app.observability.events import TraceEvent, event_names
 
 
 @dataclass(frozen=True)
@@ -29,6 +22,7 @@ class ExecutionTrace:
     failure_class: str | None = None
     thread_id: str | None = None
     recovery_decision: str | None = None
+    events: tuple[TraceEvent, ...] = ()
 
     def as_log_fields(self) -> dict:
         return {
@@ -42,6 +36,8 @@ class ExecutionTrace:
             "outcome": self.outcome,
             "failure_class": self.failure_class,
             "recovery_decision": self.recovery_decision,
+            "event_names": list(event_names(self.events)),
+            "event_count": len(self.events),
         }
 
 
@@ -74,6 +70,10 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
     if state.failure_class is not None:
         failure_class = state.failure_class.value
 
+    recovery_decision = None
+    if state.recovery_decision is not None:
+        recovery_decision = state.recovery_decision.value
+
     return ExecutionTrace(
         run_id=trace_id,
         request_id=trace_id,
@@ -85,7 +85,6 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
         retry_count=retry_count,
         outcome=outcome,
         failure_class=failure_class,
-        recovery_decision=(
-            state.recovery_decision.value if state.recovery_decision is not None else None
-        ),
+        recovery_decision=recovery_decision,
+        events=state.events,
     )

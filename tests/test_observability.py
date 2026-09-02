@@ -5,6 +5,14 @@ from app.agent.router import AgentRouter
 from app.agent.state import AgentStatus
 from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
+from app.evaluation.agent_cases import (
+    DIRECT_SUCCESS_EVENTS,
+    MODEL_FAILURE_EVENTS,
+    RETRY_THEN_SUCCESS_EVENTS,
+    TOOL_FAILURE_EVENTS,
+    TOOL_SUCCESS_EVENTS,
+)
+from app.observability.events import TraceEventName
 from app.observability.trace import ExecutionTrace
 
 
@@ -24,6 +32,94 @@ class RecordingTool:
         self.calls.append(arguments)
         index = min(len(self.calls) - 1, len(self.results) - 1)
         return self.results[index]
+
+
+def _event_names(trace: ExecutionTrace) -> tuple[str, ...]:
+    return tuple(event.name for event in trace.events)
+
+
+def test_direct_run_emits_expected_events():
+    runtime = _runtime()
+    _answer, trace = asyncio.run(runtime.run_with_trace("hello there"))
+
+    assert _event_names(trace) == DIRECT_SUCCESS_EVENTS
+    assert [event.order for event in trace.events] == list(range(len(trace.events)))
+    assert TraceEventName.RUN_COMPLETED.value in _event_names(trace)
+    assert "event_names" in trace.as_log_fields()
+    assert trace.as_log_fields()["event_names"] == list(DIRECT_SUCCESS_EVENTS)
+
+
+def test_successful_tool_run_emits_expected_events():
+    tool = RecordingTool(
+        ToolResult(
+            success=True,
+            data={"work_order_id": "WO-123", "status": "open", "issue_type": "plumbing"},
+        )
+    )
+    runtime = _runtime(tool)
+    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+
+    assert _event_names(trace) == TOOL_SUCCESS_EVENTS
+    assert trace.events[2].metadata["attempt"] == 1
+
+
+def test_retry_flow_contains_recovery_retry_event():
+    tool = RecordingTool(
+        [
+            ToolResult(success=False, data={"error": "temporary"}, retryable=True),
+            ToolResult(
+                success=True,
+                data={
+                    "work_order_id": "WO-123",
+                    "status": "open",
+                    "issue_type": "plumbing",
+                },
+            ),
+        ]
+    )
+    runtime = _runtime(tool)
+    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+
+    names = _event_names(trace)
+    assert names == RETRY_THEN_SUCCESS_EVENTS
+    assert TraceEventName.RECOVERY_DECISION.value in names
+    recovery = next(
+        event for event in trace.events if event.name == TraceEventName.RECOVERY_DECISION.value
+    )
+    assert recovery.metadata["action"] == "retry"
+
+
+def test_failure_flow_contains_run_failed_event():
+    tool = RecordingTool(
+        ToolResult(success=False, data={"error": "missing_work_order_id"})
+    )
+    runtime = _runtime(tool)
+    _answer, trace = asyncio.run(runtime.run_with_trace("Need maintenance help"))
+
+    names = _event_names(trace)
+    assert names == TOOL_FAILURE_EVENTS
+    assert TraceEventName.RUN_FAILED.value in names
+    assert TraceEventName.RUN_COMPLETED.value not in names
+
+
+def test_model_timeout_emits_run_failed():
+    from app.infra.errors import ModelTimeout
+
+    class SlowLLM:
+        async def generate(self, prompt: str) -> str:
+            await asyncio.sleep(1.0)
+            return "unreachable"
+
+    runtime = AsyncAgentRuntime(SlowLLM(), model_timeout_seconds=0.05)
+    try:
+        asyncio.run(runtime.run_with_trace("hello there"))
+        raise AssertionError("expected ModelTimeout")
+    except ModelTimeout as exc:
+        from app.observability.trace import trace_from_state
+
+        assert exc.state is not None
+        trace = trace_from_state(exc.state)
+        assert _event_names(trace) == MODEL_FAILURE_EVENTS
 
 
 def _runtime(tool: RecordingTool | None = None) -> AsyncAgentRuntime:
@@ -49,6 +145,7 @@ def test_direct_run_creates_completed_trace():
     assert trace.attempts == 0
     assert trace.retry_count == 0
     assert trace.outcome == "success"
+    assert trace.recovery_decision is None
     assert trace.run_id
 
 
@@ -111,3 +208,4 @@ def test_retry_path_reports_attempt_count():
     assert trace.retry_count == 1
     assert trace.verification_result == "true"
     assert trace.outcome == "success"
+    assert trace.recovery_decision == "retry"

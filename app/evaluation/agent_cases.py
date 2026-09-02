@@ -5,6 +5,48 @@ from app.agent.state import AgentStatus
 from app.agent.tools import ToolResult
 from app.evaluation.trajectory import Trajectory
 from app.infra.errors import FailureClass
+from app.observability.events import TraceEventName as E
+
+
+DIRECT_SUCCESS_EVENTS = (
+    E.RUN_STARTED.value,
+    E.ROUTE_SELECTED.value,
+    E.RUN_COMPLETED.value,
+)
+TOOL_SUCCESS_EVENTS = (
+    E.RUN_STARTED.value,
+    E.ROUTE_SELECTED.value,
+    E.TOOL_STARTED.value,
+    E.TOOL_COMPLETED.value,
+    E.VERIFICATION_COMPLETED.value,
+    E.RUN_COMPLETED.value,
+)
+RETRY_THEN_SUCCESS_EVENTS = (
+    E.RUN_STARTED.value,
+    E.ROUTE_SELECTED.value,
+    E.TOOL_STARTED.value,
+    E.TOOL_FAILED.value,
+    E.VERIFICATION_COMPLETED.value,
+    E.RECOVERY_DECISION.value,
+    E.TOOL_STARTED.value,
+    E.TOOL_COMPLETED.value,
+    E.VERIFICATION_COMPLETED.value,
+    E.RUN_COMPLETED.value,
+)
+TOOL_FAILURE_EVENTS = (
+    E.RUN_STARTED.value,
+    E.ROUTE_SELECTED.value,
+    E.TOOL_STARTED.value,
+    E.TOOL_FAILED.value,
+    E.VERIFICATION_COMPLETED.value,
+    E.RECOVERY_DECISION.value,
+    E.RUN_FAILED.value,
+)
+MODEL_FAILURE_EVENTS = (
+    E.RUN_STARTED.value,
+    E.ROUTE_SELECTED.value,
+    E.RUN_FAILED.value,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +76,7 @@ DEFAULT_CASES = [
             recovery_decision=None,
             outcome="success",
             terminal_status=AgentStatus.COMPLETED.value,
+            event_names=DIRECT_SUCCESS_EVENTS,
         ),
     ),
     EvaluationCase(
@@ -49,6 +92,7 @@ DEFAULT_CASES = [
             recovery_decision=None,
             outcome="success",
             terminal_status=AgentStatus.COMPLETED.value,
+            event_names=TOOL_SUCCESS_EVENTS,
         ),
     ),
     EvaluationCase(
@@ -64,6 +108,7 @@ DEFAULT_CASES = [
             recovery_decision="fail",
             outcome="needs_human_review",
             terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            event_names=TOOL_FAILURE_EVENTS,
         ),
     ),
     EvaluationCase(
@@ -115,6 +160,7 @@ DEFAULT_CASES = [
             recovery_decision="retry",
             outcome="success",
             terminal_status=AgentStatus.COMPLETED.value,
+            event_names=RETRY_THEN_SUCCESS_EVENTS,
         ),
     ),
     EvaluationCase(
@@ -207,6 +253,7 @@ DEFAULT_CASES = [
             recovery_decision=None,
             outcome="failure",
             terminal_status=AgentStatus.FAILED.value,
+            event_names=MODEL_FAILURE_EVENTS,
         ),
     ),
     EvaluationCase(

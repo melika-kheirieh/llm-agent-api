@@ -49,6 +49,23 @@ def test_evaluation_result_compares_full_trajectory():
     assert not mismatched_arguments.passed
 
 
+def test_evaluation_result_event_names_are_optional():
+    expected = Trajectory(action="direct", terminal_status="completed")
+    actual = Trajectory(
+        action="direct",
+        terminal_status="completed",
+        event_names=("run_started", "route_selected", "run_completed"),
+    )
+    assert EvaluationResult("direct", expected, actual).passed
+
+    expected_events = Trajectory(
+        action="direct",
+        terminal_status="completed",
+        event_names=("run_started", "run_completed"),
+    )
+    assert not EvaluationResult("direct", expected_events, actual).passed
+
+
 def test_all_trajectory_cases_pass():
     async def _run():
         return [await run_case(case) for case in DEFAULT_CASES]

@@ -9,6 +9,8 @@ class Trajectory:
     Does not include the chat response text. terminal_status is AgentStatus;
     outcome is the trace outcome (success | needs_human_review | failure).
     attempts is total tool executions (first try included).
+    event_names is an optional ordered list of step event names; timestamps
+    are never compared.
     """
 
     action: str | None = None
@@ -20,3 +22,4 @@ class Trajectory:
     recovery_decision: str | None = None
     outcome: str = "success"
     terminal_status: str | None = None
+    event_names: tuple[str, ...] | None = None

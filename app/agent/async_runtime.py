@@ -17,6 +17,7 @@ from app.infra.errors import (
     UnknownFailure,
 )
 from app.llm.async_base import AsyncLLMClient
+from app.observability.events import TraceEventName
 from app.observability.trace import ExecutionTrace, trace_from_state
 from app.tools.work_order import WorkOrderObservation
 
@@ -86,14 +87,25 @@ class AsyncAgentRuntime:
     async def _execute(self, message: str) -> tuple[str, AgentState]:
         request = AgentRequest(message=message, metadata={})
         state = AgentState(request=request, status=AgentStatus.RUNNING)
+        state = state.record(TraceEventName.RUN_STARTED)
         decision = self.router.route(request)
         state = replace(state, decision=decision)
+        state = state.record(
+            TraceEventName.ROUTE_SELECTED,
+            action=decision.action.value,
+            tool_name=decision.tool_name,
+        )
 
         if decision.action == AgentAction.DIRECT:
             analysis = self.analyze(message)
             try:
                 answer = await self.respond(message, analysis)
             except AgentFailure as exc:
+                state = state.record(
+                    TraceEventName.RUN_FAILED,
+                    status=AgentStatus.FAILED.value,
+                    failure_class=exc.failure_class.value,
+                )
                 exc.state = replace(
                     state,
                     status=AgentStatus.FAILED,
@@ -101,6 +113,10 @@ class AsyncAgentRuntime:
                 )
                 raise
             state = replace(state, status=AgentStatus.COMPLETED)
+            state = state.record(
+                TraceEventName.RUN_COMPLETED,
+                status=AgentStatus.COMPLETED.value,
+            )
             return answer, state
 
         if decision.action == AgentAction.USE_TOOL:
@@ -110,6 +126,11 @@ class AsyncAgentRuntime:
             state,
             status=AgentStatus.NEEDS_HUMAN_REVIEW,
             failure_class=FailureClass.UNKNOWN,
+        )
+        state = state.record(
+            TraceEventName.RUN_FAILED,
+            status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+            failure_class=FailureClass.UNKNOWN.value,
         )
         return _REVIEW_RESPONSE, state
 
@@ -123,12 +144,22 @@ class AsyncAgentRuntime:
                 status=AgentStatus.NEEDS_HUMAN_REVIEW,
                 failure_class=FailureClass.TOOL_ERROR,
             )
+            state = state.record(
+                TraceEventName.RUN_FAILED,
+                status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+                failure_class=FailureClass.TOOL_ERROR.value,
+            )
             return _REVIEW_RESPONSE, state
 
         while True:
             arguments = decision.arguments or {}
             attempt = state.attempts + 1
             attempt_class: FailureClass | None = None
+            state = state.record(
+                TraceEventName.TOOL_STARTED,
+                tool_name=tool.name,
+                attempt=attempt,
+            )
             try:
                 async with asyncio.timeout(self.tool_timeout_seconds):
                     result = await tool.execute(arguments)
@@ -149,6 +180,25 @@ class AsyncAgentRuntime:
                 )
                 attempt_class = FailureClass.TOOL_ERROR
 
+            if result.success:
+                state = state.record(
+                    TraceEventName.TOOL_COMPLETED,
+                    tool_name=tool.name,
+                    attempt=attempt,
+                )
+            else:
+                failed_class = (
+                    attempt_class.value
+                    if attempt_class is not None
+                    else FailureClass.TOOL_ERROR.value
+                )
+                state = state.record(
+                    TraceEventName.TOOL_FAILED,
+                    tool_name=tool.name,
+                    attempt=attempt,
+                    failure_class=failed_class,
+                )
+
             observation = Observation(
                 tool_name=tool.name,
                 success=result.success,
@@ -158,6 +208,10 @@ class AsyncAgentRuntime:
                 [ContextItem(key="tool_observation", value=observation, source="tool")]
             )
             verified = self.verifier.verify(result, arguments)
+            state = state.record(
+                TraceEventName.VERIFICATION_COMPLETED,
+                verified=verified,
+            )
             if verified:
                 failure_class = None
             elif attempt_class is not None:
@@ -180,14 +234,27 @@ class AsyncAgentRuntime:
             )
             if verified:
                 last = selected[-1].value if selected else observation
+                state = state.record(
+                    TraceEventName.RUN_COMPLETED,
+                    status=AgentStatus.COMPLETED.value,
+                )
                 return _format_tool_answer(last), state
 
             action = self.recovery.decide(attempt, result.retryable)
             state = replace(state, recovery_decision=action)
+            state = state.record(
+                TraceEventName.RECOVERY_DECISION,
+                action=action.value,
+            )
             if action == RecoveryAction.RETRY:
                 continue
 
             state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+            state = state.record(
+                TraceEventName.RUN_FAILED,
+                status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+                failure_class=failure_class.value if failure_class is not None else None,
+            )
             return _REVIEW_RESPONSE, state
 
     async def aclose(self) -> None:

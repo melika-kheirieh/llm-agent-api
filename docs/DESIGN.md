@@ -67,7 +67,7 @@ save_chat_and_trace()  — one AsyncSession, one commit
 If that transaction fails, neither row is committed and the API returns `503`.
 
 Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
-attempts, recovery, outcome) against the same loop. It does not score answer text.
+attempts, recovery, outcome, events) against the same loop. It does not score answer text.
 
 ---
 
@@ -83,7 +83,7 @@ The live runtime is explicit, not a hidden graph:
 * **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
 * **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
-* **Traces** — `trace_from_state()` after each run; logged and persisted with the chat row
+* **Traces** — `trace_from_state()` after each run; summary fields are persisted. Step events live on the in-memory `ExecutionTrace` and in `chat_success` logs (`event_names`), not on `GET /runs`
 * **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring
 
 The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.

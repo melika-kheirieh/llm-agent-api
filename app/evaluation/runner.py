@@ -13,6 +13,7 @@ from app.evaluation.metrics import EvaluationResult
 from app.evaluation.trajectory import Trajectory
 from app.infra.config import settings
 from app.infra.errors import AgentFailure, DatabaseError
+from app.observability.events import event_names as names_of
 from app.observability.trace import trace_from_state
 from app.tools.work_order import WorkOrderLookupTool
 
@@ -133,6 +134,7 @@ def trajectory_from_state(state: AgentState) -> Trajectory:
         recovery_decision=recovery,
         outcome=trace.outcome,
         terminal_status=trace.terminal_status,
+        event_names=names_of(state.events),
     )
 
 

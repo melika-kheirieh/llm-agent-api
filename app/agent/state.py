@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
 from app.agent.observation import Observation
 from app.agent.recovery import RecoveryAction
 from app.infra.errors import FailureClass
+from app.observability.events import TraceEvent, TraceEventName, append_event
 
 
 class AgentStatus(str, Enum):
@@ -25,4 +26,8 @@ class AgentState:
     observations: tuple[Observation, ...] = ()
     recovery_decision: RecoveryAction | None = None
     failure_class: FailureClass | None = None
+    events: tuple[TraceEvent, ...] = ()
     status: AgentStatus = AgentStatus.CREATED
+
+    def record(self, name: TraceEventName | str, **metadata: Any) -> "AgentState":
+        return replace(self, events=append_event(self.events, name, **metadata))
