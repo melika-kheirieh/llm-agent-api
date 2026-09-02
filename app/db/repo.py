@@ -34,10 +34,37 @@ async def close_db() -> None:
     await engine.dispose()
 
 
+def _agent_run(trace: ExecutionTrace) -> AgentRun:
+    return AgentRun(
+        run_id=trace.run_id,
+        terminal_status=trace.terminal_status,
+        decision=trace.decision,
+        selected_tool=trace.selected_tool,
+        verification_result=trace.verification_result,
+        attempts=trace.attempts,
+        retry_count=trace.retry_count,
+        outcome=trace.outcome,
+        failure_class=trace.failure_class,
+    )
+
+
 async def save_chat(message: str, response: str) -> None:
     try:
         async with SessionLocal() as session:
             session.add(ChatMessage(message=message, response=response))
+            await session.commit()
+    except Exception as e:
+        raise DatabaseError(str(e))
+
+
+async def save_chat_and_trace(
+    message: str, response: str, trace: ExecutionTrace
+) -> None:
+    """Persist chat row and execution trace in a single transaction."""
+    try:
+        async with SessionLocal() as session:
+            session.add(ChatMessage(message=message, response=response))
+            session.add(_agent_run(trace))
             await session.commit()
     except Exception as e:
         raise DatabaseError(str(e))
@@ -62,19 +89,7 @@ def _run_to_dict(row: AgentRun) -> dict:
 async def save_trace(trace: ExecutionTrace) -> None:
     try:
         async with SessionLocal() as session:
-            session.add(
-                AgentRun(
-                    run_id=trace.run_id,
-                    terminal_status=trace.terminal_status,
-                    decision=trace.decision,
-                    selected_tool=trace.selected_tool,
-                    verification_result=trace.verification_result,
-                    attempts=trace.attempts,
-                    retry_count=trace.retry_count,
-                    outcome=trace.outcome,
-                    failure_class=trace.failure_class,
-                )
-            )
+            session.add(_agent_run(trace))
             await session.commit()
     except Exception as e:
         raise DatabaseError(str(e))

@@ -109,8 +109,7 @@ def test_container_reuses_runtime_until_closed(mocker):
 
 
 def test_chat_concurrent_requests_overlap(mocker):
-    mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
-    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
+    mocker.patch("app.api.routes.save_chat_and_trace", new_callable=AsyncMock)
 
     class SlowAgent:
         async def run(self, message: str) -> str:

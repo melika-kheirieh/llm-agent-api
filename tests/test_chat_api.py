@@ -4,8 +4,7 @@ from app.infra.errors import DatabaseError
 
 
 def test_chat_success(client, mocker, override_agent_ok):
-    mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
-    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
+    mocker.patch("app.api.routes.save_chat_and_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hello"})
 
@@ -26,11 +25,9 @@ def test_chat_llm_failure(client, override_agent_llm_error):
 
 
 def test_chat_persists(mocker, client, override_agent_ok):
-    chat_spy = mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
-    trace_spy = mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
+    spy = mocker.patch("app.api.routes.save_chat_and_trace", new_callable=AsyncMock)
     client.post("/chat", json={"message": "hi"})
-    chat_spy.assert_awaited_once()
-    trace_spy.assert_awaited_once()
+    spy.assert_awaited_once()
 
 
 def test_chat_missing_message(client):
@@ -59,8 +56,7 @@ def test_chat_internal_error(client, mocker):
 
 
 def test_chat_response_shape(client, mocker, override_agent_ok):
-    mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
-    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
+    mocker.patch("app.api.routes.save_chat_and_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hi"})
     data = resp.json()
@@ -71,11 +67,10 @@ def test_chat_response_shape(client, mocker, override_agent_ok):
 
 def test_chat_persistence_failure(client, mocker, override_agent_ok):
     mocker.patch(
-        "app.api.routes.save_chat",
+        "app.api.routes.save_chat_and_trace",
         new_callable=AsyncMock,
         side_effect=DatabaseError("db down"),
     )
-    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hi"})
 
