@@ -32,7 +32,7 @@ FastAPI
 validate_startup() → init_db() → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
-  → AgentRouter
+  → Router (AgentRouter default)
        DIRECT  → AsyncLLMClient.generate
        USE_TOOL → AgentTool.execute
                 → Observation
@@ -67,7 +67,9 @@ save_chat_and_trace()  — one AsyncSession, one commit
 If that transaction fails, neither row is committed and the API returns `503`.
 
 Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
-attempts, recovery, outcome, events) against the same loop. It does not score answer text.
+attempts, recovery, outcome, events) against the same loop. Default cases use the
+keyword router; LLM-routing cases inject `LlmAgentRouter` and a fake that returns
+JSON. It does not score answer text.
 
 ---
 
@@ -75,7 +77,7 @@ attempts, recovery, outcome, events) against the same loop. It does not score an
 
 The live runtime is explicit, not a hidden graph:
 
-* **Router** — deterministic keyword match (`"work order"` / `"maintenance"`), not an LLM planner
+* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production and default eval use `AgentRouter` (keyword match on `"work order"` / `"maintenance"`). `LlmAgentRouter` is opt-in: it requests JSON, validates action/tool/arguments, and classifies unusable output as `model_error`. It is not an LLM planner for the rest of the loop.
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
 * **Observation** — tool outcome attached to `AgentState`
 * **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
@@ -122,6 +124,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 * Upstream model failure or model timeout → `502`
 * Tool timeout / tool error / verification failure → `200` with the review message; `failure_class` on the trace
 * Persistence failure (chat write, trace write, `/ready`) → `503`
+* Persistence failure (chat write, trace write, `/ready`) → `503`
 * Unexpected internal error → `500`
 * Invalid environment → process fails at startup
 
@@ -141,7 +144,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around **model** and **tool** calls separately, and propagate `CancelledError` without wrapping it as a model failure. Persistence runs after the agent returns and is not covered by those timeouts. The alternative (one timeout around the whole run) made tool hangs look like LLM failures.
 
-**Why deterministic routing instead of an LLM planner?** V1 needs a testable, cheap first boundary: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM planner would add latency, cost, and non-determinism before the first tool exists. The router is **keyword matching**, not function-calling.
+**Why deterministic routing by default?** V1 production and eval still use keyword matching so the first boundary stays cheap and reproducible: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM router exists behind the same `Router` protocol: it requests JSON, validates the parsed decision, and rejects invalid tools/arguments as `model_error`. It is opt-in, not the default, and it is not function-calling or a multi-agent planner.
 
 **Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a domain gate (required fields, requested-id match, allowed status) so unverified output cannot be returned as if it were. It is **not** a second model.
 

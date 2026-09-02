@@ -112,7 +112,7 @@ def test_missing_work_order_id_uses_real_tool_and_fails_verification():
 
 
 def test_router_extracts_work_order_id():
-    decision = AgentRouter().route(
+    decision = AgentRouter().decide(
         AgentRequest(message="Status of work order WO-99", metadata={})
     )
 

@@ -5,7 +5,7 @@ from app.agent.context import ContextItem, ContextPolicy
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
 from app.agent.observation import Observation
 from app.agent.recovery import RecoveryAction, RecoveryPolicy
-from app.agent.router import AgentRouter
+from app.agent.router import AgentRouter, Router
 from app.agent.schemas import Analysis
 from app.agent.state import AgentState, AgentStatus
 from app.agent.tools import AgentTool, ToolResult
@@ -33,7 +33,7 @@ class AsyncAgentRuntime:
         timeout_seconds: float = 60.0,
         model_timeout_seconds: float | None = None,
         tool_timeout_seconds: float | None = None,
-        router: AgentRouter | None = None,
+        router: Router | None = None,
         tools: dict[str, AgentTool] | None = None,
         verifier: ToolVerifier | None = None,
         recovery: RecoveryPolicy | None = None,
@@ -88,7 +88,29 @@ class AsyncAgentRuntime:
         request = AgentRequest(message=message, metadata={})
         state = AgentState(request=request, status=AgentStatus.RUNNING)
         state = state.record(TraceEventName.RUN_STARTED)
-        decision = self.router.route(request)
+        try:
+            decision = await self.router.route(request)
+        except AgentFailure as exc:
+            decision = getattr(exc, "decision", None)
+            if decision is not None:
+                state = replace(state, decision=decision)
+                state = state.record(
+                    TraceEventName.ROUTE_SELECTED,
+                    action=decision.action.value,
+                    tool_name=decision.tool_name,
+                )
+            state = replace(
+                state,
+                status=AgentStatus.FAILED,
+                failure_class=exc.failure_class,
+            )
+            state = state.record(
+                TraceEventName.RUN_FAILED,
+                status=AgentStatus.FAILED.value,
+                failure_class=exc.failure_class.value,
+            )
+            exc.state = state
+            raise
         state = replace(state, decision=decision)
         state = state.record(
             TraceEventName.ROUTE_SELECTED,

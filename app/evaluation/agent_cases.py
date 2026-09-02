@@ -47,6 +47,10 @@ MODEL_FAILURE_EVENTS = (
     E.ROUTE_SELECTED.value,
     E.RUN_FAILED.value,
 )
+ROUTE_PARSE_FAILURE_EVENTS = (
+    E.RUN_STARTED.value,
+    E.RUN_FAILED.value,
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,8 @@ class EvaluationCase:
     model_timeout_seconds: float | None = None
     tool_timeout_seconds: float | None = None
     tool_delay_seconds: float | None = None
+    router_kind: str = "keyword"
+    route_output: str | None = None
 
 
 DEFAULT_CASES = [
@@ -271,6 +277,104 @@ DEFAULT_CASES = [
             recovery_decision="escalate",
             outcome="needs_human_review",
             terminal_status=AgentStatus.NEEDS_HUMAN_REVIEW.value,
+        ),
+    ),
+    EvaluationCase(
+        name="llm_chooses_direct",
+        message="Check work order WO-123",
+        router_kind="llm",
+        route_output='{"action": "direct", "tool_name": null, "arguments": null}',
+        expected=Trajectory(
+            action=AgentAction.DIRECT.value,
+            tool_name=None,
+            tool_arguments=None,
+            verification_result=None,
+            failure_class=None,
+            attempts=0,
+            recovery_decision=None,
+            outcome="success",
+            terminal_status=AgentStatus.COMPLETED.value,
+            event_names=DIRECT_SUCCESS_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="llm_chooses_work_order_lookup",
+        message="hello there",
+        router_kind="llm",
+        route_output=(
+            '{"action": "use_tool", "tool_name": "work_order_lookup", '
+            '"arguments": {"work_order_id": "WO-123"}}'
+        ),
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": "WO-123"},
+            verification_result=True,
+            failure_class=None,
+            attempts=1,
+            recovery_decision=None,
+            outcome="success",
+            terminal_status=AgentStatus.COMPLETED.value,
+            event_names=TOOL_SUCCESS_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="llm_malformed_structured_output",
+        message="hello there",
+        router_kind="llm",
+        route_output="not a routing object",
+        expected=Trajectory(
+            action=None,
+            tool_name=None,
+            tool_arguments=None,
+            verification_result=None,
+            failure_class=FailureClass.MODEL_ERROR.value,
+            attempts=0,
+            recovery_decision=None,
+            outcome="failure",
+            terminal_status=AgentStatus.FAILED.value,
+            event_names=ROUTE_PARSE_FAILURE_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="llm_invalid_tool_selection",
+        message="hello there",
+        router_kind="llm",
+        route_output=(
+            '{"action": "use_tool", "tool_name": "billing_lookup", "arguments": {}}'
+        ),
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="billing_lookup",
+            tool_arguments={},
+            verification_result=None,
+            failure_class=FailureClass.MODEL_ERROR.value,
+            attempts=0,
+            recovery_decision=None,
+            outcome="failure",
+            terminal_status=AgentStatus.FAILED.value,
+            event_names=MODEL_FAILURE_EVENTS,
+        ),
+    ),
+    EvaluationCase(
+        name="llm_invalid_arguments",
+        message="hello there",
+        router_kind="llm",
+        route_output=(
+            '{"action": "use_tool", "tool_name": "work_order_lookup", '
+            '"arguments": {"work_order_id": 123}}'
+        ),
+        expected=Trajectory(
+            action=AgentAction.USE_TOOL.value,
+            tool_name="work_order_lookup",
+            tool_arguments={"work_order_id": 123},
+            verification_result=None,
+            failure_class=FailureClass.MODEL_ERROR.value,
+            attempts=0,
+            recovery_decision=None,
+            outcome="failure",
+            terminal_status=AgentStatus.FAILED.value,
+            event_names=MODEL_FAILURE_EVENTS,
         ),
     ),
 ]

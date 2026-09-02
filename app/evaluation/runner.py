@@ -3,6 +3,7 @@ import asyncio
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.agent.context import ContextPolicy
 from app.agent.contracts import AgentAction
+from app.agent.llm_router import ROUTING_PROMPT_MARKER, LlmAgentRouter
 from app.agent.recovery import RecoveryPolicy
 from app.agent.router import AgentRouter
 from app.agent.state import AgentState
@@ -58,9 +59,22 @@ class DelayedScriptedTool(ScriptedTool):
         return await super().execute(arguments)
 
 
+class _RoutingAwareLLM:
+    def __init__(self, route_output: str, answer: str = "direct evaluation answer"):
+        self.route_output = route_output
+        self.answer = answer
+
+    async def generate(self, prompt: str) -> str:
+        if ROUTING_PROMPT_MARKER in prompt:
+            return self.route_output
+        return self.answer
+
+
 def _llm_for_case(case: EvaluationCase):
     if case.model_mode == "timeout":
         return _TimeoutLLM()
+    if case.router_kind == "llm":
+        return _RoutingAwareLLM(case.route_output or "")
     return _EvaluationLLM()
 
 
@@ -102,12 +116,24 @@ def _runtime_for_case(case: EvaluationCase) -> AsyncAgentRuntime:
     if tools is None:
         work_order = WorkOrderLookupTool()
         tools = {work_order.name: work_order}
+    llm = _llm_for_case(case)
+    model_timeout = (
+        timeout if case.model_timeout_seconds is None else case.model_timeout_seconds
+    )
+    if case.router_kind == "llm":
+        router = LlmAgentRouter(
+            llm,
+            allowed_tools=frozenset(tools),
+            timeout_seconds=model_timeout,
+        )
+    else:
+        router = AgentRouter()
     return AsyncAgentRuntime(
-        _llm_for_case(case),
+        llm,
         timeout_seconds=timeout,
         model_timeout_seconds=case.model_timeout_seconds,
         tool_timeout_seconds=case.tool_timeout_seconds,
-        router=AgentRouter(),
+        router=router,
         tools=tools,
         verifier=ToolVerifier(),
         recovery=RecoveryPolicy(max_attempts=2),

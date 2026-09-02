@@ -41,6 +41,19 @@ class ModelError(AgentFailure):
         super().__init__(FailureClass.MODEL_ERROR, message, state)
 
 
+class RoutingError(ModelError):
+    """Malformed or invalid structured routing output."""
+
+    def __init__(
+        self,
+        message: str = "Invalid routing output",
+        state: object | None = None,
+        decision: object | None = None,
+    ):
+        super().__init__(message, state)
+        self.decision = decision
+
+
 class ToolError(AgentFailure):
     def __init__(self, message: str = "Tool execution failed", state: object | None = None):
         super().__init__(FailureClass.TOOL_ERROR, message, state)

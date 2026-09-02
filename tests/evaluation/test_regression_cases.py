@@ -160,3 +160,61 @@ def test_tool_timeout_trajectory():
     assert result.actual.attempts == 2
     assert result.actual.outcome == "needs_human_review"
     assert result.passed
+
+
+def test_llm_chooses_direct_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "llm_chooses_direct")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "direct"
+    assert result.actual.tool_name is None
+    assert result.actual.tool_arguments is None
+    assert result.actual.outcome == "success"
+    assert result.passed
+
+
+def test_llm_chooses_work_order_lookup_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "llm_chooses_work_order_lookup")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "use_tool"
+    assert result.actual.tool_name == "work_order_lookup"
+    assert result.actual.tool_arguments == {"work_order_id": "WO-123"}
+    assert result.actual.outcome == "success"
+    assert result.passed
+
+
+def test_llm_malformed_structured_output_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "llm_malformed_structured_output")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action is None
+    assert result.actual.tool_name is None
+    assert result.actual.tool_arguments is None
+    assert result.actual.failure_class == "model_error"
+    assert result.actual.outcome == "failure"
+    assert result.passed
+
+
+def test_llm_invalid_tool_selection_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "llm_invalid_tool_selection")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "use_tool"
+    assert result.actual.tool_name == "billing_lookup"
+    assert result.actual.tool_arguments == {}
+    assert result.actual.failure_class == "model_error"
+    assert result.actual.outcome == "failure"
+    assert result.passed
+
+
+def test_llm_invalid_arguments_trajectory():
+    case = next(c for c in DEFAULT_CASES if c.name == "llm_invalid_arguments")
+    result = asyncio.run(run_case(case))
+
+    assert result.actual.action == "use_tool"
+    assert result.actual.tool_name == "work_order_lookup"
+    assert result.actual.tool_arguments == {"work_order_id": 123}
+    assert result.actual.failure_class == "model_error"
+    assert result.actual.outcome == "failure"
+    assert result.passed

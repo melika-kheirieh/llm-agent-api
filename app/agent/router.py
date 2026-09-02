@@ -1,4 +1,5 @@
 import re
+from typing import Protocol
 
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
 
@@ -20,10 +21,19 @@ def extract_work_order_id(message: str) -> str | None:
     return None
 
 
-class AgentRouter:
-    """Small deterministic router used as the first agent boundary."""
+class Router(Protocol):
+    """Routing boundary used by AsyncAgentRuntime."""
 
-    def route(self, request: AgentRequest) -> AgentDecision:
+    async def route(self, request: AgentRequest) -> AgentDecision: ...
+
+
+class AgentRouter:
+    """Deterministic keyword router. Default production and evaluation path."""
+
+    async def route(self, request: AgentRequest) -> AgentDecision:
+        return self.decide(request)
+
+    def decide(self, request: AgentRequest) -> AgentDecision:
         message = request.message.lower()
 
         if "work order" in message or "maintenance" in message:

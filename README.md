@@ -4,7 +4,7 @@ A FastAPI service that runs an async LLM agent with explicit routing, tool use, 
 
 API → `AsyncAgentRuntime` → `AsyncLLMClient` → SQLite.
 
-This is **Agent Core v1**: a real control loop, not a chat wrapper. The router is **deterministic keyword matching** (not an LLM planner). The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
+This is **Agent Core v1**: a real control loop, not a chat wrapper. The default router is **deterministic keyword matching**. An LLM-backed router can be injected behind the same `Router` interface; it is not the production default. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
 
 Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
 
@@ -22,7 +22,7 @@ FastAPI
   GET  /ready         → database SELECT 1
   ↓
 AsyncAgentRuntime
-  → AgentRouter (DIRECT | USE_TOOL)
+  → Router (AgentRouter default; LlmAgentRouter opt-in)
   → tool + Observation + ToolVerifier
   → RecoveryPolicy (max 2 attempts)
   → ExecutionTrace

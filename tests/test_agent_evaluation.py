@@ -25,6 +25,11 @@ def test_default_cases_cover_required_trajectories():
         "retry_exhaustion",
         "model_timeout",
         "tool_timeout",
+        "llm_chooses_direct",
+        "llm_chooses_work_order_lookup",
+        "llm_malformed_structured_output",
+        "llm_invalid_tool_selection",
+        "llm_invalid_arguments",
     }
 
 
