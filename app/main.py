@@ -2,15 +2,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router
-from app.db.repo import init_db
+from app.db.repo import close_db, init_db
+from app.infra.config import settings
+from app.infra.container import close_runtime, init_runtime
 from app.middleware.observability import ObservabilityMiddleware
 from app.infra.logging import setup_logging
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    settings.validate_startup()
+    await init_db()
+    await init_runtime()
     yield
+    await close_runtime()
+    await close_db()
 
 
 def create_app() -> FastAPI:

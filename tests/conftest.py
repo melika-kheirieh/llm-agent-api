@@ -1,32 +1,44 @@
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
-
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.infra.container import get_agent
-from app.infra.errors import UpstreamLLMError
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
+
+from app.infra.container import get_agent  # noqa: E402
+from app.infra.errors import UpstreamLLMError  # noqa: E402
+from app.main import app  # noqa: E402
+from app.observability.trace import ExecutionTrace  # noqa: E402
 
 
 class FakeAgent:
     def __init__(self, mode="ok"):
         self.mode = mode
 
-    def run(self, message: str) -> str:
+    async def run(self, message: str) -> str:
         if self.mode == "ok":
             return f"echo: {message}"
         if self.mode == "llm_error":
             raise UpstreamLLMError("boom")
         raise RuntimeError("unexpected")
 
+    async def run_with_trace(self, message: str) -> tuple[str, ExecutionTrace]:
+        text = await self.run(message)
+        return text, ExecutionTrace(
+            run_id="test",
+            request_id="test",
+            terminal_status="completed",
+            decision="direct",
+            outcome="success",
+        )
+
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
 
 
 @pytest.fixture
