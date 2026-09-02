@@ -59,7 +59,7 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 
 `POST /chat` has no identity, so `TrustedScope` is empty and tool lookups fail closed. Tests and evaluation pass a backend tenant/property into `AsyncAgentRuntime`. `"policy"` routes to `maintenance_policy_lookup`; `"work order"` / `"maintenance"` route to `work_order_lookup`.
 
-Chat and trace are written in **one transaction**.
+Chat, run summary, and sanitized events are written in **one transaction**.
 
 ---
 
@@ -92,5 +92,5 @@ pytest -q
 * `/health` vs `/ready`
 * Chat clients stay on `{ "response" }`
 * DIRECT vs tool is an explicit runtime choice
-* Chat + trace persist together
+* Chat + trace + events persist together
 * The loop is testable without a provider

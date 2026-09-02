@@ -10,7 +10,7 @@ The goal is **clarity and correctness**, not feature breadth.
 
 **POST `/chat`** — `{ "response": "..." }` only. Empty message → `400`. Missing field → `422`. The body does not include `run_id`.
 
-**GET `/runs/{run_id}`** — persisted `ExecutionTrace`, or `404`.
+**GET `/runs/{run_id}`** — persisted run summary and sanitized step events, or `404`.
 
 **GET `/health`** — process liveness. No database, no LLM.
 
@@ -40,7 +40,7 @@ AsyncAgentRuntime.run_with_trace()
   → ExecutionTrace
   ↓
 save_chat_and_trace()  — one AsyncSession, one commit
-  chat_messages + agent_runs
+  chat_messages + agent_runs + agent_run_events
 ```
 
 **Key properties**
@@ -64,7 +64,7 @@ save_chat_and_trace()  — one AsyncSession, one commit
 4. Persist chat row and `ExecutionTrace` in **one transaction** (`save_chat_and_trace`)
 5. Return `{ "response" }` only
 
-If that transaction fails, neither row is committed and the API returns `503`.
+If that transaction fails, no chat, run, or event rows are committed and the API returns `503`.
 
 Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
 attempts, recovery, outcome, events) against the same loop. Default cases use the
@@ -89,7 +89,7 @@ The live runtime is explicit. LangGraph selects the next node; it does not repla
 * **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
 * **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
 * **Context policy** — deterministic assembly of routing, answer, execution, and trusted-scope slices. Raw tool output is not trusted until verification. `thread_id` is in-process only; history is bounded and not persisted
-* **Traces** — `trace_from_state()` after each run; summary fields are persisted. `router_type`, `decision`, `selected_tool`, and `routing_ms` (time from `run_started` to `route_selected`) are on the in-memory trace and `chat_success` logs. They are not on `GET /runs`. Step events live on the in-memory `ExecutionTrace` and in logs (`event_names`).
+* **Traces** — `trace_from_state()` after each run; summary fields persist on `agent_runs` and sanitized step events persist on `agent_run_events`. `router_type` and `routing_ms` stay log/in-memory fields (not `agent_runs` columns). `GET /runs/{run_id}` returns the summary plus ordered events.
 * **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring. Routing comparison runs the same messages on keyword and LLM routers.
 
 The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.
@@ -117,7 +117,9 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **`agent_runs`** — `run_id` (PK), `terminal_status`, `decision`, `selected_tool`, `verification_result`, `attempts`, `retry_count`, `outcome`, `failure_class`, `created_at`
 
-`POST /chat` uses `save_chat_and_trace` (one session, one commit). Isolated `save_chat` / `save_trace` remain for tests and tooling. `GET /runs/{run_id}` uses `get_trace`.
+**`agent_run_events`** — `run_id` (FK), `event_order`, `name`, `timestamp`, `metadata_json` (sanitized). Unique on (`run_id`, `event_order`). Created by `Base.metadata.create_all` like the other tables; this project does not use Alembic.
+
+`POST /chat` uses `save_chat_and_trace` (one session, one commit). Isolated `save_chat` / `save_trace` remain for tests and tooling. `GET /runs/{run_id}` uses `get_trace`. Event metadata is allowlisted: no tenant/property, tool payloads, or prompts. Raw observations stay on `AgentState` only.
 
 ---
 
@@ -165,7 +167,7 @@ OpenAI tries native JSON-object formatting, then falls back to `generate()` plus
 
 **Why bounded retries?** Transient tool failures should retry once (`max_attempts=2`) and then stop. Unbounded loops hide bugs and burn the provider. After the budget, the run goes to human review with a fixed message.
 
-**Why persist execution traces?** Logs explain a single process. `agent_runs` makes `run_id`, decision, tool, verification, attempts, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat and trace share one transaction so a persist failure cannot leave a chat row without a run.
+**Why persist execution traces?** Logs explain a single process. `agent_runs` plus `agent_run_events` make route, tools, verification, recovery, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat, run summary, and events share one transaction so a persist failure cannot leave a chat row without a run. This is not replay, memory, or a LangGraph checkpointer.
 
 **Why LangGraph only for transitions?** The control loop was already correct as an explicit `AsyncAgentRuntime` method chain. Moving **edges** into LangGraph makes route / tool / verify / recover / answer paths visible as a graph without copying that logic into nodes. Nodes call the existing steps. There is no checkpointer, no multi-agent graph, and no LangChain chain. Tracing still uses `TraceEvent` on `AgentState`; it does not depend on LangGraph internals.
 

@@ -28,10 +28,10 @@ AsyncAgentRuntime
   ↓
 AsyncLLMClient (Ollama / OpenAI)
   ↓
-SQLite (one transaction): chat_messages + agent_runs
+SQLite (one transaction): chat_messages + agent_runs + agent_run_events
 ```
 
-Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id`. Chat and trace are written together; traces are read from `GET /runs/{run_id}`.
+Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id`. Chat, run summary, and sanitized events are written together; traces are read from `GET /runs/{run_id}`.
 
 ---
 

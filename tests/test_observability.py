@@ -12,7 +12,7 @@ from app.evaluation.agent_cases import (
     TOOL_FAILURE_EVENTS,
     TOOL_SUCCESS_EVENTS,
 )
-from app.observability.events import TraceEventName
+from app.observability.events import TraceEventName, sanitize_event_metadata
 from app.observability.trace import ExecutionTrace
 from app.tools.catalog import DEFAULT_SCOPE, scoped_work_order_data
 
@@ -271,3 +271,31 @@ def test_llm_router_trace_exposes_router_type_and_timing():
     )
     assert route_event.metadata["router_type"] == "llm"
     assert route_event.metadata["action"] == "direct"
+
+
+def test_sanitize_event_metadata_keeps_operator_tokens():
+    safe = sanitize_event_metadata(
+        {
+            "error": "cross_tenant",
+            "tool_name": "work_order_lookup",
+            "attempt": 1,
+            "verified": False,
+            "tenant_id": "tenant-a",
+            "property_id": "prop-1",
+            "data": {"status": "open"},
+            "arguments": {"work_order_id": "WO-123"},
+            "unknown": "drop-me",
+        }
+    )
+
+    assert safe == {
+        "error": "cross_tenant",
+        "tool_name": "work_order_lookup",
+        "attempt": 1,
+        "verified": False,
+    }
+
+
+def test_sanitize_event_metadata_drops_non_scalars():
+    safe = sanitize_event_metadata({"error": {"nested": True}, "action": "retry"})
+    assert safe == {"action": "retry"}

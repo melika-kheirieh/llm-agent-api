@@ -94,6 +94,7 @@ def test_save_chat_and_trace_persists_both_rows():
     assert stored is not None
     assert stored["run_id"] == trace.run_id
     assert stored["decision"] == "direct"
+    assert stored["events"] == []
 
 
 def test_trace_persist_failure_does_not_commit_chat():

@@ -31,7 +31,7 @@ Invalid **environment** (unsupported `LLM_PROVIDER`, unsupported `ROUTER_MODE`, 
 }
 ```
 
-No `run_id` in the body. Chat and `ExecutionTrace` are persisted in **one transaction** (`save_chat_and_trace`). If that write fails, neither row is committed.
+No `run_id` in the body. Chat, `agent_runs`, and sanitized `agent_run_events` are persisted in **one transaction** (`save_chat_and_trace`). If that write fails, no rows are committed.
 
 ### Errors
 
@@ -64,9 +64,19 @@ Returns the persisted execution trace. Does not return the chat `response`.
   "retry_count": 0,
   "outcome": "success",
   "failure_class": null,
-  "created_at": "…"
+  "created_at": "…",
+  "events": [
+    {
+      "order": 0,
+      "name": "run_started",
+      "timestamp": 0.0,
+      "metadata": {"router_type": "keyword"}
+    }
+  ]
 }
 ```
+
+Existing summary fields are unchanged. `events` is an ordered list of sanitized step events (`name`, `order`, `timestamp`, `metadata`). Metadata is allowlisted operator tokens (`action`, `tool_name`, `error`, `verified`, …). It does not include `tenant_id`, `property_id`, tool payloads, or chat text. Runs persisted without events return `"events": []`.
 
 `decision` is `"direct"` or `"use_tool"`. Review paths use `needs_human_review`.
 

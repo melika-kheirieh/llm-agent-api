@@ -5,6 +5,34 @@ from enum import Enum
 from time import time
 from typing import Any
 
+_ALLOWED_EVENT_METADATA_KEYS = frozenset(
+    {
+        "router_type",
+        "action",
+        "tool_name",
+        "status",
+        "failure_class",
+        "attempt",
+        "error",
+        "verified",
+    }
+)
+_BLOCKED_EVENT_METADATA_KEYS = frozenset(
+    {
+        "tenant_id",
+        "property_id",
+        "trusted_scope",
+        "data",
+        "payload",
+        "arguments",
+        "message",
+        "prompt",
+        "response",
+        "observations",
+        "evidence",
+    }
+)
+
 
 class TraceEventName(str, Enum):
     RUN_STARTED = "run_started"
@@ -46,3 +74,34 @@ def append_event(
 
 def event_names(events: tuple[TraceEvent, ...]) -> tuple[str, ...]:
     return tuple(event.name for event in events)
+
+
+def sanitize_event_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Copy operator-safe event fields. Drops scope, payloads, and unknown keys.
+
+    In-memory TraceEvent metadata is a debug surface. Persisted rows and
+    GET /runs must not carry tenant/property or untrusted tool data.
+    """
+    safe: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in _BLOCKED_EVENT_METADATA_KEYS:
+            continue
+        if key not in _ALLOWED_EVENT_METADATA_KEYS:
+            continue
+        if not _is_persistable_scalar(value):
+            continue
+        safe[key] = value
+    return safe
+
+
+def persisted_event_payload(event: TraceEvent) -> dict[str, Any]:
+    return {
+        "order": event.order,
+        "name": event.name,
+        "timestamp": event.timestamp,
+        "metadata": sanitize_event_metadata(event.metadata),
+    }
+
+
+def _is_persistable_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
