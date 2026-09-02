@@ -1,11 +1,14 @@
 import asyncio
 from dataclasses import replace
 
+from app.agent.context import ContextItem, ContextPolicy
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
+from app.agent.observation import Observation
+from app.agent.recovery import RecoveryAction, RecoveryPolicy
 from app.agent.router import AgentRouter
 from app.agent.schemas import Analysis
 from app.agent.state import AgentState, AgentStatus
-from app.agent.tools import AgentTool, ToolResult
+from app.agent.tools import AgentTool
 from app.agent.verification import ToolVerifier
 from app.infra.errors import UpstreamLLMError
 from app.llm.async_base import AsyncLLMClient
@@ -23,12 +26,16 @@ class AsyncAgentRuntime:
         router: AgentRouter | None = None,
         tools: dict[str, AgentTool] | None = None,
         verifier: ToolVerifier | None = None,
+        recovery: RecoveryPolicy | None = None,
+        context_policy: ContextPolicy | None = None,
     ):
         self.llm = llm
         self.timeout_seconds = timeout_seconds
         self.router = router or AgentRouter()
         self.tools = tools or {}
         self.verifier = verifier or ToolVerifier()
+        self.recovery = recovery or RecoveryPolicy(max_attempts=2)
+        self.context_policy = context_policy or ContextPolicy()
 
     def analyze(self, message: str) -> Analysis:
         return Analysis(language="auto", tone="neutral", task_type="qa")
@@ -64,19 +71,37 @@ class AsyncAgentRuntime:
         if tool is None:
             return _REVIEW_RESPONSE
 
-        result = await tool.execute(decision.arguments or {})
-        verified = self.verifier.verify(result)
-        state = replace(
-            state,
-            tool_result=result,
-            verification_result=verified,
-            status=(
-                AgentStatus.COMPLETED if verified else AgentStatus.NEEDS_HUMAN_REVIEW
-            ),
-        )
-        if state.status == AgentStatus.NEEDS_HUMAN_REVIEW:
+        while True:
+            result = await tool.execute(decision.arguments or {})
+            observation = Observation(
+                tool_name=tool.name,
+                success=result.success,
+                data=result.data,
+            )
+            selected = self.context_policy.select(
+                [ContextItem(key="tool_observation", value=observation, source="tool")]
+            )
+            verified = self.verifier.verify(result)
+            attempts = state.attempts + 1
+            state = replace(
+                state,
+                attempts=attempts,
+                tool_result=result,
+                verification_result=verified,
+                observations=state.observations + (observation,),
+                status=(
+                    AgentStatus.COMPLETED if verified else AgentStatus.RUNNING
+                ),
+            )
+            if verified:
+                last = selected[-1].value if selected else observation
+                return _format_tool_answer(last)
+
+            action = self.recovery.decide(attempts, result.retryable)
+            if action == RecoveryAction.RETRY:
+                continue
+
             return _REVIEW_RESPONSE
-        return _format_tool_answer(result)
 
     async def aclose(self) -> None:
         aclose = getattr(self.llm, "aclose", None)
@@ -84,8 +109,8 @@ class AsyncAgentRuntime:
             await aclose()
 
 
-def _format_tool_answer(result: ToolResult) -> str:
-    data = result.data
+def _format_tool_answer(observation: Observation) -> str:
+    data = observation.data
     work_order_id = data.get("work_order_id")
     status = data.get("status")
     issue_type = data.get("issue_type")

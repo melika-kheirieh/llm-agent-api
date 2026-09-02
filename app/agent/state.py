@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from app.agent.observation import Observation
+
 
 class AgentStatus(str, Enum):
     CREATED = "created"
@@ -18,4 +20,5 @@ class AgentState:
     tool_result: Any = None
     verification_result: bool | None = None
     attempts: int = 0
+    observations: tuple[Observation, ...] = ()
     status: AgentStatus = AgentStatus.CREATED

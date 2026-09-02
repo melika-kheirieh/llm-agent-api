@@ -21,13 +21,14 @@ class FakeLLM:
 class RecordingTool:
     name = "work_order_lookup"
 
-    def __init__(self, result: ToolResult):
-        self.result = result
+    def __init__(self, result: ToolResult | list[ToolResult]):
+        self.results = [result] if isinstance(result, ToolResult) else list(result)
         self.calls: list[dict] = []
 
     async def execute(self, arguments: dict) -> ToolResult:
         self.calls.append(arguments)
-        return self.result
+        index = min(len(self.calls) - 1, len(self.results) - 1)
+        return self.results[index]
 
 
 def _runtime(llm: FakeLLM, tool: RecordingTool | None = None) -> AsyncAgentRuntime:
@@ -118,3 +119,61 @@ def test_router_extracts_work_order_id():
     assert decision.action == AgentAction.USE_TOOL
     assert decision.tool_name == "work_order_lookup"
     assert decision.arguments == {"work_order_id": "WO-99"}
+
+
+def test_tool_success_observation_reaches_final_response():
+    llm = FakeLLM("should not be used")
+    tool = RecordingTool(
+        ToolResult(
+            success=True,
+            data={
+                "work_order_id": "WO-123",
+                "status": "open",
+                "issue_type": "plumbing",
+            },
+        )
+    )
+    runtime = _runtime(llm, tool)
+
+    result = asyncio.run(runtime.run("Check work order WO-123"))
+
+    assert result == "Work order WO-123 is open (plumbing)."
+    assert llm.prompts == []
+
+
+def test_retryable_failure_retries_once_then_succeeds():
+    llm = FakeLLM("should not be used")
+    tool = RecordingTool(
+        [
+            ToolResult(success=False, data={"error": "temporary"}, retryable=True),
+            ToolResult(
+                success=True,
+                data={
+                    "work_order_id": "WO-123",
+                    "status": "open",
+                    "issue_type": "plumbing",
+                },
+            ),
+        ]
+    )
+    runtime = _runtime(llm, tool)
+
+    result = asyncio.run(runtime.run("Check work order WO-123"))
+
+    assert len(tool.calls) == 2
+    assert result == "Work order WO-123 is open (plumbing)."
+    assert llm.prompts == []
+
+
+def test_non_retryable_failure_goes_directly_to_review():
+    llm = FakeLLM("retry would use this")
+    tool = RecordingTool(
+        ToolResult(success=False, data={"error": "missing_work_order_id"}, retryable=False)
+    )
+    runtime = _runtime(llm, tool)
+
+    result = asyncio.run(runtime.run("Need maintenance help"))
+
+    assert result == "The request could not be verified."
+    assert len(tool.calls) == 1
+    assert llm.prompts == []

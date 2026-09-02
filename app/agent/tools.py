@@ -6,6 +6,7 @@ from typing import Protocol
 class ToolResult:
     success: bool
     data: dict
+    retryable: bool = False
 
 
 class AgentTool(Protocol):

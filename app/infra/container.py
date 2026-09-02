@@ -1,4 +1,6 @@
 from app.agent.async_runtime import AsyncAgentRuntime
+from app.agent.context import ContextPolicy
+from app.agent.recovery import RecoveryPolicy
 from app.agent.router import AgentRouter
 from app.agent.tools import AgentTool
 from app.agent.verification import ToolVerifier
@@ -50,6 +52,8 @@ def _build_runtime() -> AsyncAgentRuntime:
         router=AgentRouter(),
         tools=_build_tools(),
         verifier=ToolVerifier(),
+        recovery=RecoveryPolicy(max_attempts=2),
+        context_policy=ContextPolicy(),
     )
 
 
