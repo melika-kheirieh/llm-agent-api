@@ -14,7 +14,7 @@ The goal is **clarity and correctness**, not feature breadth.
 
 **GET `/health`** — process liveness. No database, no LLM.
 
-**GET `/ready`** — `SELECT 1` against SQLite. `503` if the database is unavailable.
+**GET `/ready`** — `SELECT 1` against the configured database. `503` if the database is unavailable.
 
 ---
 
@@ -29,7 +29,7 @@ FastAPI
   GET  /health
   GET  /ready
   ↓
-validate_startup() → init_db() → init_runtime()
+validate_startup() → init_db() (Alembic upgrade) → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
   → LangGraph transitions (route_node → answer_node | tool_node → verify_node → answer_node | recovery_node)
@@ -103,6 +103,7 @@ Settings stay environment variables (no extra settings framework). `validate_sta
 * `LLM_PROVIDER` must be `ollama` or `openai`
 * `ROUTER_MODE` must be `keyword` or `llm` (default `keyword`)
 * `LLM_TIMEOUT_SECONDS` must be a finite number `> 0`
+* `DATABASE_URL` must be non-empty (SQLite or PostgreSQL async URLs are normalized; other schemes pass through)
 * `OPENAI_API_KEY` is required when the provider is OpenAI
 
 Invalid config raises `ConfigurationError` and the process does not start (no HTTP status). Docker `HEALTHCHECK` uses `/health`, not `/ready`.
@@ -111,13 +112,15 @@ Invalid config raises `ConfigurationError` and the process does not start (no HT
 
 ## Persistence
 
-Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
+Async SQLAlchemy. Local default is SQLite (`sqlite+aiosqlite`). Production-like Compose uses PostgreSQL (`postgresql+asyncpg`). `DATABASE_URL` selects the backend; see [database.md](database.md).
+
+Schema is applied with Alembic (`init_db` runs `upgrade head` before runtime init). Do not use `create_all` for application tables. Compose credentials are local development only. Multi-replica production should run migrations separately, not on every replica boot.
 
 **`chat_messages`** — `message`, `response`, `created_at`
 
 **`agent_runs`** — `run_id` (PK), `terminal_status`, `decision`, `selected_tool`, `verification_result`, `attempts`, `retry_count`, `outcome`, `failure_class`, `created_at`
 
-**`agent_run_events`** — `run_id` (FK), `event_order`, `name`, `timestamp`, `metadata_json` (sanitized). Unique on (`run_id`, `event_order`). Created by `Base.metadata.create_all` like the other tables; this project does not use Alembic.
+**`agent_run_events`** — `run_id` (FK), `event_order`, `name`, `timestamp`, `metadata_json` (sanitized). Unique on (`run_id`, `event_order`).
 
 `POST /chat` uses `save_chat_and_trace` (one session, one commit). Isolated `save_chat` / `save_trace` remain for tests and tooling. `GET /runs/{run_id}` uses `get_trace`. Event metadata is allowlisted: no tenant/property, tool payloads, or prompts. Raw observations stay on `AgentState` only.
 

@@ -2,11 +2,11 @@
 
 A FastAPI service that runs an async LLM agent with explicit routing, tool use, verification, and durable execution traces.
 
-API → `AsyncAgentRuntime` → LangGraph transitions → existing router / tools / verifier / recovery → `AsyncLLMClient` → SQLite.
+API → `AsyncAgentRuntime` → LangGraph transitions → existing router / tools / verifier / recovery → `AsyncLLMClient` → SQLite (local) or PostgreSQL (production).
 
 This is **Agent Core v1**: a real control loop, not a chat wrapper. LangGraph owns **node transitions only**. Tools are **scope-aware** (`TrustedScope` is never model-generated). The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. Verification is **domain-aware** per tool, not a second model.
 
-Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
+Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md) · Database: [docs/database.md](docs/database.md)
 
 ---
 
@@ -28,7 +28,7 @@ AsyncAgentRuntime
   ↓
 AsyncLLMClient (Ollama / OpenAI)
   ↓
-SQLite (one transaction): chat_messages + agent_runs + agent_run_events
+SQLite or PostgreSQL (one transaction): chat_messages + agent_runs + agent_run_events
 ```
 
 Invalid config fails **before** DB or runtime init. `POST /chat` does not return `run_id`. Chat, run summary, and sanitized events are written together; traces are read from `GET /runs/{run_id}`.
@@ -43,7 +43,7 @@ cp .env.example .env
 python -m uvicorn app.main:app --reload
 ```
 
-Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example`. Startup validates `LLM_PROVIDER` (`ollama` | `openai`), `ROUTER_MODE` (`keyword` | `llm`, default `keyword`), `LLM_TIMEOUT_SECONDS` (positive number), and `OPENAI_API_KEY` when the provider is OpenAI.
+Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example`. Startup validates `LLM_PROVIDER` (`ollama` | `openai`), `ROUTER_MODE` (`keyword` | `llm`, default `keyword`), `LLM_TIMEOUT_SECONDS` (positive number), `DATABASE_URL` (non-empty), and `OPENAI_API_KEY` when the provider is OpenAI. Schema is applied with Alembic on startup. Local default is SQLite; see [docs/database.md](docs/database.md).
 
 ---
 
@@ -96,7 +96,7 @@ Empty `message` → **400**. Missing field → **422**. Unknown run → **404**.
 pytest -q
 ```
 
-No real LLM. HTTP tests override the agent with FastAPI DI (`FakeAgent`). Router, tools, recovery, traces, and evaluation run against `AsyncAgentRuntime` with a fake `AsyncLLMClient`. Routing comparison scores keyword vs LLM trajectories, not answer text.
+No real LLM. HTTP tests override the agent with FastAPI DI (`FakeAgent`). Router, tools, recovery, traces, and evaluation run against `AsyncAgentRuntime` with a fake `AsyncLLMClient`. Routing comparison scores keyword vs LLM trajectories, not answer text. Postgres persistence tests run only when `TEST_POSTGRES_URL` is set.
 
 ---
 
@@ -116,9 +116,11 @@ Rationale is in [Design Decisions](docs/DESIGN.md#design-decisions).
 
 ---
 
-## Docker (API only)
+## Docker
 
-The LLM runtime stays **outside** the container. The image `HEALTHCHECK` uses `/health` (liveness), not `/ready`.
+The LLM runtime stays **outside** the containers. The API image `HEALTHCHECK` uses `/health` (liveness), not `/ready`. `/ready` still checks the database.
+
+**SQLite (single container):**
 
 ```bash
 docker build -t llm-agent-api .
@@ -129,5 +131,13 @@ docker run --rm -p 8000:8000 \
   -e DATABASE_URL=sqlite+aiosqlite:///./app.db \
   llm-agent-api
 ```
+
+**PostgreSQL (API + database):**
+
+```bash
+docker compose up --build
+```
+
+Compose waits until Postgres is healthy, then starts the API. The API runs Alembic on boot. Data is stored in the `pgdata` volume. The Compose credentials (`agent` / `agent`) are **local development only**. Multi-replica production should run migrations as a separate step before starting API processes. Override LLM settings with a `.env` file or `-e` as usual.
 
 License: [MIT](LICENSE)

@@ -29,7 +29,7 @@ curl -s http://127.0.0.1:8000/ready
 {"status": "ok"}
 ```
 
-`/health` does not touch SQLite or the LLM. `/ready` runs `SELECT 1` and returns **503** if the database is down.
+`/health` does not touch the database or the LLM. `/ready` runs `SELECT 1` and returns **503** if the database is down.
 
 ---
 
@@ -65,7 +65,7 @@ Chat, run summary, and sanitized events are written in **one transaction**.
 
 ## 5) Fetch the trace
 
-`run_id` is not in the chat JSON. After a successful `/chat`, it is on the `chat_success` log line and in SQLite `agent_runs`:
+`run_id` is not in the chat JSON. After a successful `/chat`, it is on the `chat_success` log line and in `agent_runs` (SQLite locally):
 
 ```bash
 sqlite3 app.db "SELECT run_id, decision, selected_tool, outcome FROM agent_runs ORDER BY created_at DESC LIMIT 1;"

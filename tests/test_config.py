@@ -8,6 +8,13 @@ from app.infra.errors import ConfigurationError
 from app.main import create_app
 
 
+def test_blank_database_url_is_rejected():
+    settings = Settings(database_url="  ", llm_timeout_seconds="60")
+
+    with pytest.raises(ConfigurationError, match="DATABASE_URL"):
+        settings.validate_startup()
+
+
 def test_invalid_provider_is_rejected():
     settings = Settings(llm_provider="claude", llm_timeout_seconds="60")
 

@@ -3,7 +3,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.db.models import ChatMessage
 from app.db.repo import (
@@ -15,7 +15,8 @@ from app.db.repo import (
     save_chat_and_trace,
     save_trace,
 )
-from app.infra.errors import DatabaseError
+from app.db.url import async_database_url
+from app.infra.errors import ConfigurationError, DatabaseError
 from app.observability.trace import ExecutionTrace
 
 
@@ -46,6 +47,29 @@ def test_async_database_url_upgrades_sqlite():
 def test_async_database_url_keeps_aiosqlite():
     url = "sqlite+aiosqlite:///./app.db"
     assert _async_database_url(url) == url
+
+
+def test_async_database_url_upgrades_postgres():
+    assert (
+        async_database_url("postgresql://agent:agent@localhost:5432/agent")
+        == "postgresql+asyncpg://agent:agent@localhost:5432/agent"
+    )
+    assert (
+        async_database_url("postgres://agent:agent@db:5432/agent")
+        == "postgresql+asyncpg://agent:agent@db:5432/agent"
+    )
+    already = "postgresql+asyncpg://agent:agent@db:5432/agent"
+    assert async_database_url(already) == already
+
+
+def test_async_database_url_passes_through_unknown_schemes():
+    url = "mysql+aiomysql://user:pass@localhost/app"
+    assert async_database_url(url) == url
+
+
+def test_async_database_url_rejects_blank():
+    with pytest.raises(ConfigurationError, match="DATABASE_URL"):
+        async_database_url("  ")
 
 
 def test_save_chat_wraps_commit_failure(mocker):
@@ -113,3 +137,13 @@ def test_trace_persist_failure_does_not_commit_chat():
     assert chat is None
     assert stored is not None
     assert stored["run_id"] == run_id
+
+
+def test_init_db_applies_alembic_migrations():
+    async def _run():
+        await init_db()
+        async with SessionLocal() as session:
+            result = await session.execute(text("SELECT version_num FROM alembic_version"))
+            return result.scalar_one()
+
+    assert asyncio.run(_run()) == "001_initial"

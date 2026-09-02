@@ -3,6 +3,7 @@ import math
 import os
 from dotenv import load_dotenv
 
+from app.db.url import async_database_url
 from app.infra.errors import ConfigurationError
 
 load_dotenv()
@@ -63,6 +64,7 @@ class Settings(BaseModel):
             )
         self.llm_timeout_seconds = timeout
         self.router_mode = normalize_router_mode(self.router_mode)
+        async_database_url(self.database_url)
 
         if provider == "openai" and not (self.openai_api_key or "").strip():
             raise ConfigurationError(

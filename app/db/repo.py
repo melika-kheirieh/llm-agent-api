@@ -5,18 +5,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.infra.config import settings
 from app.infra.errors import DatabaseError
-from app.db.models import AgentRun, AgentRunEvent, Base, ChatMessage
+from app.db.migrate import upgrade_to_head
+from app.db.models import AgentRun, AgentRunEvent, ChatMessage
+from app.db.url import async_database_url
 from app.observability.events import persisted_event_payload
 from app.observability.trace import ExecutionTrace
 
 
 def _async_database_url(url: str) -> str:
-    if url.startswith("sqlite://") and not url.startswith("sqlite+aiosqlite://"):
-        return "sqlite+aiosqlite://" + url[len("sqlite://") :]
-    return url
+    return async_database_url(url)
 
 
-engine = create_async_engine(_async_database_url(settings.database_url), future=True)
+engine = create_async_engine(async_database_url(settings.database_url), future=True)
 SessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -27,8 +27,9 @@ SessionLocal = async_sessionmaker(
 
 async def init_db() -> None:
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        async with engine.connect() as conn:
+            await conn.run_sync(upgrade_to_head)
+            await conn.commit()
     except Exception as e:
         raise DatabaseError(str(e))
 

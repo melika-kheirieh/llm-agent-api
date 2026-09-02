@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,10 +8,20 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
+_TEST_DB = ROOT / ".pytest-app.db"
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_DB}"
+
 from app.infra.container import get_agent  # noqa: E402
 from app.infra.errors import UpstreamLLMError  # noqa: E402
 from app.main import app  # noqa: E402
 from app.observability.trace import ExecutionTrace  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_test_database():
+    _TEST_DB.unlink(missing_ok=True)
+    yield
+    _TEST_DB.unlink(missing_ok=True)
 
 
 class FakeAgent:

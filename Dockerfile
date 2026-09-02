@@ -12,11 +12,13 @@ RUN apt-get update \
        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and migration files
+COPY alembic.ini .
+COPY alembic ./alembic
 COPY app ./app
 
 # Expose API port
