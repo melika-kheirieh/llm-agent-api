@@ -29,7 +29,7 @@ HTTP request logs also record `path`, `method`, `status`, and `latency_ms`. LLM 
 
 Step events (`run_started`, `route_selected`, `tool_started`, `tool_completed`, `tool_failed`, `verification_completed`, `recovery_decision`, `run_completed`, `run_failed`) are recorded on the in-memory trace in order. Logs include `event_names` and `event_count`. Events are not persisted and are not returned by `GET /runs/{run_id}`.
 
-Thread-scoped context is not implemented. Trace objects may carry a `thread_id` of `None`; it is not persisted.
+Thread-scoped context is in-process only: `thread_id` is copied onto the in-memory `ExecutionTrace` and into `chat_success` logs. It is not a database column and is not returned by `GET /runs/{run_id}`. History lives in a per-runtime buffer, not in SQLite.
 
 ## Reliability Signals
 

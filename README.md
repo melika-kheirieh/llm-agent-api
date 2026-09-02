@@ -103,7 +103,7 @@ No real LLM. HTTP tests override the agent with FastAPI DI (`FakeAgent`). Router
 
 Deferred on purpose (docs only, no placeholder modules):
 
-- conversation memory / thread context
+- conversation memory persisted across processes
 - checkpoints
 - specialists and `DELEGATE`
 - distributed workers / RabbitMQ

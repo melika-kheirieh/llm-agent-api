@@ -1,7 +1,14 @@
 import asyncio
 from dataclasses import replace
 
-from app.agent.context import ContextItem, ContextPolicy
+from app.agent.context import (
+    ContextPolicy,
+    HistoryTurn,
+    RequestContext,
+    ThreadHistoryBuffer,
+    TrustedScope,
+    render_answer_prompt,
+)
 from app.agent.contracts import AgentAction, AgentDecision, AgentRequest
 from app.agent.observation import Observation
 from app.agent.recovery import RecoveryAction, RecoveryPolicy
@@ -52,12 +59,23 @@ class AsyncAgentRuntime:
         self.verifier = verifier or ToolVerifier()
         self.recovery = recovery or RecoveryPolicy(max_attempts=2)
         self.context_policy = context_policy or ContextPolicy()
+        self._history = ThreadHistoryBuffer()
 
     def analyze(self, message: str) -> Analysis:
         return Analysis(language="auto", tone="neutral", task_type="qa")
 
     async def respond(self, message: str, analysis: Analysis) -> str:
-        prompt = f"Answer clearly.\n\nUser: {message}"
+        return await self._respond_from_context(
+            self.context_policy.assemble(
+                RequestContext(message=message)
+            ).answer,
+            analysis,
+        )
+
+    async def _respond_from_context(
+        self, answer_context, _analysis: Analysis
+    ) -> str:
+        prompt = render_answer_prompt(answer_context)
         try:
             async with asyncio.timeout(self.model_timeout_seconds):
                 return (await self.llm.generate(prompt)).strip()
@@ -66,29 +84,89 @@ class AsyncAgentRuntime:
         except TimeoutError as e:
             raise ModelTimeout("Model request timed out") from e
 
-    async def run(self, message: str) -> str:
-        answer, _state = await self.run_detailed(message)
+    async def run(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        history: tuple[HistoryTurn, ...] | None = None,
+        trusted_scope: TrustedScope | None = None,
+    ) -> str:
+        answer, _state = await self.run_detailed(
+            message,
+            thread_id=thread_id,
+            history=history,
+            trusted_scope=trusted_scope,
+        )
         return answer
 
-    async def run_with_trace(self, message: str) -> tuple[str, ExecutionTrace]:
-        answer, state = await self.run_detailed(message)
+    async def run_with_trace(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        history: tuple[HistoryTurn, ...] | None = None,
+        trusted_scope: TrustedScope | None = None,
+    ) -> tuple[str, ExecutionTrace]:
+        answer, state = await self.run_detailed(
+            message,
+            thread_id=thread_id,
+            history=history,
+            trusted_scope=trusted_scope,
+        )
         return answer, trace_from_state(state)
 
-    async def run_detailed(self, message: str) -> tuple[str, AgentState]:
+    async def run_detailed(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        history: tuple[HistoryTurn, ...] | None = None,
+        trusted_scope: TrustedScope | None = None,
+    ) -> tuple[str, AgentState]:
         try:
-            return await self._execute(message)
+            answer, state = await self._execute(
+                message,
+                thread_id=thread_id,
+                history=history,
+                trusted_scope=trusted_scope,
+            )
         except asyncio.CancelledError:
             raise
         except AgentFailure:
             raise
         except Exception as e:
             raise UnknownFailure(str(e)) from e
+        self._history.record(
+            thread_id,
+            message,
+            answer,
+            self.context_policy.max_history,
+        )
+        return answer, state
 
-    async def _execute(self, message: str) -> tuple[str, AgentState]:
+    async def _execute(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        history: tuple[HistoryTurn, ...] | None = None,
+        trusted_scope: TrustedScope | None = None,
+    ) -> tuple[str, AgentState]:
+        scope = trusted_scope or TrustedScope()
+        prior = self._history.turns(thread_id) if history is None else history
+        request_ctx = RequestContext(
+            message=message,
+            thread_id=thread_id,
+            history=prior,
+            trusted_scope=scope,
+        )
+        agent_ctx = self.context_policy.assemble(request_ctx)
         request = AgentRequest(message=message, metadata={})
         router_type = getattr(self.router, "router_type", None)
         state = AgentState(
             request=request,
+            context=agent_ctx,
             status=AgentStatus.RUNNING,
             router_type=router_type,
         )
@@ -128,7 +206,10 @@ class AsyncAgentRuntime:
         if decision.action == AgentAction.DIRECT:
             analysis = self.analyze(message)
             try:
-                answer = await self.respond(message, analysis)
+                answer = await self._respond_from_context(
+                    self.context_policy.for_answer(agent_ctx),
+                    analysis,
+                )
             except AgentFailure as exc:
                 state = state.record(
                     TraceEventName.RUN_FAILED,
@@ -149,7 +230,7 @@ class AsyncAgentRuntime:
             return answer, state
 
         if decision.action == AgentAction.USE_TOOL:
-            return await self._run_tool(state, decision)
+            return await self._run_tool(state, decision, request_ctx)
 
         state = replace(
             state,
@@ -164,7 +245,10 @@ class AsyncAgentRuntime:
         return _REVIEW_RESPONSE, state
 
     async def _run_tool(
-        self, state: AgentState, decision: AgentDecision
+        self,
+        state: AgentState,
+        decision: AgentDecision,
+        request_ctx: RequestContext,
     ) -> tuple[str, AgentState]:
         tool = self.tools.get(decision.tool_name or "")
         if tool is None:
@@ -233,10 +317,14 @@ class AsyncAgentRuntime:
                 success=result.success,
                 data=result.data,
             )
-            selected = self.context_policy.select(
-                [ContextItem(key="tool_observation", value=observation, source="tool")]
-            )
+            observations = state.observations + (observation,)
             verified = self.verifier.verify(result, arguments)
+            agent_ctx = self.context_policy.assemble(
+                request_ctx,
+                observations=observations,
+                verification_result=verified,
+                attempts=attempt,
+            )
             state = state.record(
                 TraceEventName.VERIFICATION_COMPLETED,
                 verified=verified,
@@ -255,14 +343,15 @@ class AsyncAgentRuntime:
                 attempts=attempt,
                 tool_result=result,
                 verification_result=verified,
-                observations=state.observations + (observation,),
+                observations=observations,
+                context=agent_ctx,
                 failure_class=failure_class,
                 status=(
                     AgentStatus.COMPLETED if verified else AgentStatus.RUNNING
                 ),
             )
             if verified:
-                last = selected[-1].value if selected else observation
+                last = observation
                 state = state.record(
                     TraceEventName.RUN_COMPLETED,
                     status=AgentStatus.COMPLETED.value,

@@ -85,7 +85,7 @@ The live runtime is explicit, not a hidden graph:
 * **Recovery** — `RecoveryPolicy(max_attempts=2)` retries retryable failures (including tool timeouts), then human review. `ESCALATE` and `FAIL` both surface as the same review message today
 * **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
 * **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
-* **Context policy** — drops empty items from the **current run** only (no conversation history)
+* **Context policy** — deterministic assembly of routing, answer, execution, and trusted-scope slices. Raw tool output is not trusted until verification. `thread_id` is in-process only; history is bounded and not persisted
 * **Traces** — `trace_from_state()` after each run; summary fields are persisted. `router_type`, `decision`, `selected_tool`, and `routing_ms` (time from `run_started` to `route_selected`) are on the in-memory trace and `chat_success` logs. They are not on `GET /runs`. Step events live on the in-memory `ExecutionTrace` and in logs (`event_names`).
 * **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring. Routing comparison runs the same messages on keyword and LLM routers.
 
@@ -154,7 +154,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **Why persist execution traces?** Logs explain a single process. `agent_runs` makes `run_id`, decision, tool, verification, attempts, and outcome queryable after restart. Chat clients still only need `{ "response" }`; operators use `GET /runs/{run_id}`. Chat and trace share one transaction so a persist failure cannot leave a chat row without a run.
 
-**Why no memory / RAG / LangGraph / multi-agent?** Those layers are real products, not prerequisites for a correct control loop. Memory and RAG change retrieval, not routing. LangGraph would hide the loop this repo is meant to show. Specialists and `DELEGATE` are future routing actions, not stubs in the tree. Workers/RabbitMQ are a different execution topology on top of this in-process runtime.
+**Why no persistent memory / RAG / LangGraph / multi-agent?** Those layers are real products, not prerequisites for a correct control loop. This runtime keeps an in-process, bounded thread buffer for optional previous turns. It is not durable memory, retrieval, or a second agent. LangGraph would hide the loop this repo is meant to show. Specialists and `DELEGATE` are future routing actions, not stubs in the tree. Workers/RabbitMQ are a different execution topology on top of this in-process runtime.
 
 ---
 
@@ -162,7 +162,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 Deferred (documentation only; no placeholder modules):
 
-* Conversation memory / thread context
+* Conversation memory persisted across processes
 * Checkpoints
 * Specialists and `DELEGATE`
 * Distributed workers / RabbitMQ

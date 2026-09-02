@@ -39,6 +39,7 @@ class ExecutionTrace:
             "outcome": self.outcome,
             "failure_class": self.failure_class,
             "recovery_decision": self.recovery_decision,
+            "thread_id": self.thread_id,
             "event_names": list(event_names(self.events)),
             "event_count": len(self.events),
         }
@@ -77,6 +78,10 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
     if state.recovery_decision is not None:
         recovery_decision = state.recovery_decision.value
 
+    thread_id = None
+    if state.context is not None:
+        thread_id = state.context.execution.thread_id
+
     return ExecutionTrace(
         run_id=trace_id,
         request_id=trace_id,
@@ -90,6 +95,7 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
         failure_class=failure_class,
         recovery_decision=recovery_decision,
         router_type=state.router_type,
+        thread_id=thread_id,
         events=state.events,
     )
 

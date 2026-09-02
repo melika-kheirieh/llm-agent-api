@@ -27,6 +27,7 @@ class AgentState:
     recovery_decision: RecoveryAction | None = None
     failure_class: FailureClass | None = None
     events: tuple[TraceEvent, ...] = ()
+    context: Any = None
     router_type: str | None = None
     status: AgentStatus = AgentStatus.CREATED
 
