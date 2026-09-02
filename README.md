@@ -1,16 +1,15 @@
 # LLM Agent API
 
-A minimal FastAPI service that runs an LLM-based agent and stores chat history.
+A FastAPI service that runs an async LLM agent with explicit routing, tool execution, verification, and persisted execution traces.
 
-Designed as a **clean, extensible, reviewer-friendly skeleton**:
-API → Agent → LLM (provider-agnostic) → Persistence, with lightweight observability.
+Designed as a **reviewer-friendly backend**:
+API → AsyncAgentRuntime → AsyncLLMClient (provider-agnostic) → Persistence.
 
 ---
 
 ## Quick Demo
 
-See a 30–60 second demo flow here:  
-👉 [docs/demo.md](docs/demo.md)
+See a 30–60 second demo flow here: [docs/demo.md](docs/demo.md)
 
 ---
 
@@ -22,42 +21,50 @@ This project focuses on **structure and boundaries**, not feature breadth.
 
 The goal is to demonstrate how to design a backend for LLM-based applications where:
 - the API layer is independent of the model provider
-- the agent logic is isolated and testable
-- external dependencies (LLMs) are clearly separated from core logic
+- agent orchestration is isolated and testable
+- routing, tools, verification, and recovery are explicit
+- execution traces are durable and queryable
 
-This is a foundation, not a feature-complete agent system.
+This is Agent Core v1: a foundation, not a feature-complete agent platform.
 
 ---
 
 ## Features
 
-- FastAPI `POST /chat` endpoint
-- Minimal Agent abstraction (analyze → respond)
+- FastAPI `POST /chat` and `GET /runs/{run_id}`
+- `AsyncAgentRuntime` as the execution source of truth
+- Deterministic router (`DIRECT` or `USE_TOOL`)
+- Async tool execution with verification and bounded recovery
 - Pluggable LLM providers:
   - **Ollama** (local, no API key, no cost)
   - **OpenAI** (optional, env-driven; supports custom base URL)
-- SQLite persistence (`message`, `response`, `timestamp`)
-- Dependency-injection friendly design (testable without real LLM calls)
-- Lightweight observability (structured logging + request latency)
+- SQLite persistence: chat history (`chat_messages`) and agent runs (`agent_runs`)
+- Evaluation cases that run against the same runtime wiring
+- Lightweight observability (structured logs, HTTP latency, execution traces)
 - Design rationale: [docs/DESIGN.md](docs/DESIGN.md)
 
 ---
 
 ## Architecture at a glance
 
-Client  
-  ↓  
-FastAPI (/chat)  
-  ↓  
-Agent (application logic)  
-  ↓  
-LLMClient (interface)  
-  ↓  
-Provider (Ollama / OpenAI)  
-  ↓  
-Persistence (SQLite)  
+```
+Client
+  ↓
+FastAPI (POST /chat)
+  ↓
+AsyncAgentRuntime
+  ↓
+AgentRouter  →  DIRECT  →  AsyncLLMClient (Ollama / OpenAI)
+             →  USE_TOOL →  tool → Observation → ToolVerifier → RecoveryPolicy
+  ↓
+ExecutionTrace
+  ↓
+Persistence (SQLite: chat_messages + agent_runs)
+```
 
 Each layer has a single responsibility and can be tested independently.
+
+HTTP `POST /chat` still returns only `{"response": "..."}`. Run metadata is persisted separately and read via `GET /runs/{run_id}`.
 
 ---
 
@@ -76,7 +83,7 @@ Each layer has a single responsibility and can be tested independently.
 pip install -r requirements.txt
 cp .env.example .env
 python -m uvicorn app.main:app --reload
-````
+```
 
 Server will be available at:
 
@@ -107,7 +114,7 @@ cp .env.example .env
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma
-DATABASE_URL=sqlite:///./app.db
+DATABASE_URL=sqlite+aiosqlite:///./app.db
 ```
 
 #### Option B: OpenAI (cloud)
@@ -117,7 +124,7 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 # OPENAI_BASE_URL=https://api.openai.com/v1
-DATABASE_URL=sqlite:///./app.db
+DATABASE_URL=sqlite+aiosqlite:///./app.db
 ```
 
 ---
@@ -140,6 +147,24 @@ Successful response:
 }
 ```
 
+Tool-backed example:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8000/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Check work order WO-123"}'
+```
+
+### Run lookup
+
+After a chat request succeeds, the execution trace is stored under `run_id` and can be fetched:
+
+```bash
+curl -i "http://127.0.0.1:8000/runs/<run_id>"
+```
+
+Unknown `run_id` returns **404**.
+
 ---
 
 ### Validation behavior
@@ -157,14 +182,15 @@ Successful response:
 
 ## API Contract
 
-👉 [docs/api-contract.md](docs/api-contract.md)
+[docs/api-contract.md](docs/api-contract.md)
 
 ---
 
 ## Database
 
-* SQLite database: `app.db`
-* Table: `chat_messages`
+* SQLite database: `app.db` (async driver: `sqlite+aiosqlite`)
+* Table: `chat_messages` — user message and assistant response
+* Table: `agent_runs` — execution traces keyed by `run_id`
 
 ---
 
@@ -172,9 +198,9 @@ Successful response:
 
 Tests are written using `pytest` and run **without a real LLM**.
 
-* Agent dependency is overridden using FastAPI DI
-* A `FakeAgent` simulates responses and failures
-* Persistence is verified via mocking
+* HTTP tests override the agent dependency with a fake runtime
+* Runtime tests drive `AsyncAgentRuntime` with fake LLM/tool implementations
+* Evaluation cases use the same container wiring as production (`build_runtime`)
 
 ```bash
 pytest -q
@@ -186,7 +212,9 @@ pytest -q
 
 * Structured JSON logs
 * Request latency logging (`latency_ms`)
-* Success/failure markers
+* Execution traces (logged on chat success, persisted on `agent_runs`)
+
+Details: [docs/observability.md](docs/observability.md)
 
 ---
 
@@ -194,20 +222,17 @@ pytest -q
 
 This project intentionally does NOT include:
 
-* RAG (retrieval-augmented generation)
-* vector databases
+* conversation memory or thread context
+* checkpoints
+* specialists or `DELEGATE` routing
+* RabbitMQ, workers, or distributed execution
+* RAG or vector databases
+* LangChain / LangGraph
 * authentication / multi-user support
 * streaming responses
-* complex memory systems
 * UI layer
 
-These are valid extensions, but are excluded to keep the project:
-
-* simple
-* testable
-* easy to review
-
-The focus is on correctness, structure, and clean design.
+These are valid later milestones. They are documented as non-goals in [docs/adr/001-v1-architecture-boundaries.md](docs/adr/001-v1-architecture-boundaries.md), not as empty modules.
 
 ---
 
@@ -229,7 +254,7 @@ docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=ollama \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   -e OLLAMA_MODEL=gemma \
-  -e DATABASE_URL=sqlite:///./app.db \
+  -e DATABASE_URL=sqlite+aiosqlite:///./app.db \
   llm-agent-api
 ```
 
@@ -240,7 +265,7 @@ docker run --rm -p 8000:8000 \
   -e LLM_PROVIDER=openai \
   -e OPENAI_API_KEY="sk-..." \
   -e OPENAI_MODEL="gpt-4o-mini" \
-  -e DATABASE_URL=sqlite:///./app.db \
+  -e DATABASE_URL=sqlite+aiosqlite:///./app.db \
   llm-agent-api
 ```
 
@@ -248,5 +273,4 @@ docker run --rm -p 8000:8000 \
 
 ## Status
 
-This project is intentionally scoped as a **clean, reviewable foundation**
-rather than a feature-heavy demo.
+Agent Core v1 is a **reviewable async agent backend**: routing, tools, verification, bounded recovery, evaluation, and persisted traces — without pretending unimplemented layers exist.

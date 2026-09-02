@@ -6,7 +6,6 @@ from typing import Any
 class AgentAction(str, Enum):
     DIRECT = "direct"
     USE_TOOL = "use_tool"
-    DELEGATE = "delegate"
 
 
 @dataclass(frozen=True)

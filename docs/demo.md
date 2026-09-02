@@ -8,7 +8,7 @@ This is a quick 30–60 second demo to validate the core flow of the system.
 
 ```bash
 uvicorn app.main:app --reload
-````
+```
 
 The service will be available at:
 
@@ -32,16 +32,28 @@ Example response:
 }
 ```
 
+Work-order phrasing takes the tool path instead of the LLM:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Check work order WO-123"}'
+```
+
 ---
 
 ## 3) Validate persistence
 
-The interaction is stored in SQLite:
+Successful chats write two SQLite tables in `app.db`:
 
-* File: `app.db`
-* Table: `chat_messages`
+* `chat_messages` — user message and agent response
+* `agent_runs` — execution trace (`run_id`, decision, tool, verification, outcome)
 
-You can inspect it using any SQLite client (e.g., DB Browser for SQLite).
+Inspect with any SQLite client, or query a trace:
+
+```bash
+curl http://127.0.0.1:8000/runs/{run_id}
+```
 
 ---
 
@@ -54,15 +66,16 @@ pytest -q
 Notes:
 
 * Tests do not call a real LLM
-* The agent dependency is overridden using FastAPI DI
-* A `FakeAgent` simulates responses and failures
+* HTTP tests override the agent with FastAPI DI
+* Runtime and evaluation tests exercise `AsyncAgentRuntime` with a fake LLM
 
 ---
 
 ## What this demo shows
 
-* The `/chat` endpoint is functional
-* The agent pipeline (analyze → respond) is executed
-* LLM providers are abstracted behind an interface
-* Responses are persisted
+* `POST /chat` is functional and still returns `{ "response": "..." }`
+* `AsyncAgentRuntime` routes `DIRECT` vs tool execution
+* Tool results are verified; failures can retry once then go to review
+* Chat rows and execution traces are persisted
+* `GET /runs/{run_id}` loads a stored trace
 * The system is testable without external dependencies

@@ -1,6 +1,6 @@
 # Design — LLM Agent API
 
-This project implements a minimal, production-leaning FastAPI service that runs an LLM-backed agent and stores chat messages.
+This project implements a production-leaning FastAPI service that runs an async LLM agent and stores chat messages plus execution traces.
 
 The goal is **clarity and correctness**, not feature breadth.
 
@@ -8,19 +8,13 @@ The goal is **clarity and correctness**, not feature breadth.
 
 ## API Surface
 
-**Endpoint**
-
-POST `/chat`
-
-**Request**
+**POST `/chat`**
 
 ```json
 {
   "message": "User question"
 }
-````
-
-**Response**
+```
 
 ```json
 {
@@ -28,7 +22,11 @@ POST `/chat`
 }
 ```
 
-Invalid or empty input is rejected with `400 Bad Request`.
+Invalid or empty input is rejected with `400 Bad Request`. The success payload stays `{ "response": "..." }`.
+
+**GET `/runs/{run_id}`**
+
+Returns the persisted execution trace for a completed run, or `404` if the id is unknown.
 
 ---
 
@@ -39,20 +37,27 @@ Client
   ↓
 FastAPI (POST /chat)
   ↓
-Agent.run()
+AsyncAgentRuntime.run_with_trace()
   ↓
-LLMClient (interface)
-  ├─ OllamaClient
-  └─ OpenAIClient
+AgentRouter
+  ├─ DIRECT → AsyncLLMClient (Ollama / OpenAI)
+  └─ USE_TOOL → work_order_lookup
+                  ↓
+                Observation → ToolVerifier → RecoveryPolicy
   ↓
-Persistence (SQLite)
+ExecutionTrace
+  ↓
+Persistence
+  ├─ chat_messages
+  └─ agent_runs
 ```
 
 **Key properties**
 
 * The API layer is **provider-agnostic**
-* The agent encapsulates application logic
-* LLM providers are treated as external dependencies
+* `AsyncAgentRuntime` owns orchestration
+* LLM providers are accessed through `AsyncLLMClient`
+* Tools, verification, and recovery are explicit steps
 * Each layer has a clear responsibility and boundary
 
 ---
@@ -61,30 +66,30 @@ Persistence (SQLite)
 
 1. Receive `message` via `POST /chat`
 2. Validate input (reject missing or empty message with `400`)
-3. Execute agent pipeline:
+3. Execute `AsyncAgentRuntime.run_with_trace(message)`:
+   * Route to `DIRECT` or `USE_TOOL`
+   * `DIRECT` calls the async LLM provider
+   * `USE_TOOL` executes the selected tool, records an observation, verifies the result, and retries at most once when the failure is retryable
+   * Unverified tool results return a fixed review message
+4. Persist the chat row and the `ExecutionTrace` (`agent_runs`)
+5. Return `{ "response": ... }`
+6. Inspect a run later with `GET /runs/{run_id}`
 
-   * `analyze(message)`
-   * `respond(message, analysis)` → LLM call
-4. Persist `{message, response, timestamp}`
-5. Return `{response}`
+The whole runtime call is wrapped in a timeout (`LLM_TIMEOUT_SECONDS`).
 
 ---
 
-## Agent Abstraction
+## Agent Runtime
 
-The agent is intentionally minimal:
+`AsyncAgentRuntime` is the execution source of truth.
 
-* A single, explicit pipeline (`analyze → respond`)
-* No implicit retries or hidden control flow
-* Fully testable without real LLM calls
+* Router decides `DIRECT` vs `USE_TOOL` from the message
+* Tool path uses `Observation`, `ToolVerifier`, and `RecoveryPolicy(max_attempts=2)`
+* Context policy selects non-empty observations from the **current run only** (no conversation history)
+* `run_with_trace()` maps `AgentState` to an `ExecutionTrace`
+* Evaluation uses the same `build_runtime()` wiring with a fake LLM
 
-Designed for future extension with:
-
-* Tools
-* Memory
-* Multi-step workflows
-
-The current implementation favors transparency over sophistication.
+The HTTP chat contract does not expose these internals.
 
 ---
 
@@ -115,13 +120,12 @@ This approach:
 
 ## Persistence
 
-A minimal database layer stores chat history:
+Async SQLAlchemy stores:
 
-* `message`
-* `response`
-* `timestamp`
+* `chat_messages`: `message`, `response`, `created_at`
+* `agent_runs`: `run_id`, terminal status, decision, selected tool, verification, attempts, retry count, outcome, failure class, `created_at`
 
-SQLite is chosen because it:
+SQLite (`sqlite+aiosqlite`) is chosen because it:
 
 * Requires zero setup
 * Is easy to inspect locally
@@ -134,6 +138,7 @@ SQLite is chosen because it:
 The API exposes explicit failure boundaries:
 
 * Client input error → `400`
+* Unknown run id → `404`
 * Upstream LLM failure → `502`
 * Persistence failure → `503`
 * Unexpected internal error → `500`
@@ -152,7 +157,8 @@ To avoid over-engineering:
 
 * Structured JSON logs
 * Request latency logging (`latency_ms`)
-* Event-style success/failure logs
+* Execution traces on each successful chat
+* Queryable `agent_runs` rows
 
 No tracing frameworks or metrics stacks are included.
 
@@ -160,19 +166,17 @@ No tracing frameworks or metrics stacks are included.
 
 ## Explicit Non-Goals (Scope Control)
 
-The following features are deliberately out of scope:
+The following are deferred and exist only as documentation, not as modules:
 
-* Retrieval-Augmented Generation (RAG) or vector databases
-* Authentication or rate limiting
-* Streaming responses or WebSockets
-* Multi-user session management
-* UI / OpenWebUI integration
+* Conversation memory / thread context
+* Checkpoints
+* Specialists and `DELEGATE`
+* RabbitMQ, workers, or distributed execution
+* RAG or vector databases
+* LangChain / LangGraph
+* Authentication, streaming, or a UI
 
-These omissions are intentional to keep the system:
-
-* simple
-* testable
-* easy to review
+These omissions keep the system simple, testable, and easy to review.
 
 ---
 
