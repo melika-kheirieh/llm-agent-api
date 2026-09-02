@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.infra.container import get_agent
 from app.infra.errors import UpstreamLLMError, DatabaseError
-from app.db.repo import save_chat
+from app.db.repo import get_trace, save_chat, save_trace
 import logging
 
 
@@ -28,6 +28,7 @@ async def chat(
     try:
         response, trace = await agent.run_with_trace(message)
         await save_chat(message, response)
+        await save_trace(trace)
 
         logger.info(
             "chat_success",
@@ -46,3 +47,16 @@ async def chat(
     except DatabaseError:
         logger.error("chat_db_failure")
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict:
+    try:
+        trace = await get_trace(run_id)
+    except DatabaseError:
+        logger.error("trace_db_failure")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if trace is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return trace

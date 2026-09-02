@@ -37,7 +37,8 @@ class FakeAgent:
 
 @pytest.fixture
 def client():
-    return TestClient(app, raise_server_exceptions=False)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
 
 
 @pytest.fixture

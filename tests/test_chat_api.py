@@ -5,6 +5,7 @@ from app.infra.errors import DatabaseError
 
 def test_chat_success(client, mocker, override_agent_ok):
     mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
+    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hello"})
 
@@ -25,9 +26,11 @@ def test_chat_llm_failure(client, override_agent_llm_error):
 
 
 def test_chat_persists(mocker, client, override_agent_ok):
-    spy = mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
+    chat_spy = mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
+    trace_spy = mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
     client.post("/chat", json={"message": "hi"})
-    spy.assert_awaited_once()
+    chat_spy.assert_awaited_once()
+    trace_spy.assert_awaited_once()
 
 
 def test_chat_missing_message(client):
@@ -46,9 +49,6 @@ def test_chat_internal_error(client, mocker):
         async def run_with_trace(self, message: str):
             raise RuntimeError("Boom")
 
-        async def run_with_trace(self, message: str):
-            raise RuntimeError("Boom")
-
     app.dependency_overrides[get_agent] = lambda: BrokeAgent()
 
     try:
@@ -60,6 +60,7 @@ def test_chat_internal_error(client, mocker):
 
 def test_chat_response_shape(client, mocker, override_agent_ok):
     mocker.patch("app.api.routes.save_chat", new_callable=AsyncMock)
+    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hi"})
     data = resp.json()
@@ -74,6 +75,7 @@ def test_chat_persistence_failure(client, mocker, override_agent_ok):
         new_callable=AsyncMock,
         side_effect=DatabaseError("db down"),
     )
+    mocker.patch("app.api.routes.save_trace", new_callable=AsyncMock)
 
     resp = client.post("/chat", json={"message": "hi"})
 
