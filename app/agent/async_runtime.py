@@ -45,13 +45,17 @@ class AsyncAgentRuntime:
         return (await self.llm.generate(prompt)).strip()
 
     async def run(self, message: str) -> str:
+        answer, _state = await self.run_detailed(message)
+        return answer
+
+    async def run_detailed(self, message: str) -> tuple[str, AgentState]:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 return await self._execute(message)
         except TimeoutError as e:
             raise UpstreamLLMError("LLM request timed out") from e
 
-    async def _execute(self, message: str) -> str:
+    async def _execute(self, message: str) -> tuple[str, AgentState]:
         request = AgentRequest(message=message, metadata={})
         state = AgentState(request=request, status=AgentStatus.RUNNING)
         decision = self.router.route(request)
@@ -59,17 +63,23 @@ class AsyncAgentRuntime:
 
         if decision.action == AgentAction.DIRECT:
             analysis = self.analyze(message)
-            return await self.respond(message, analysis)
+            answer = await self.respond(message, analysis)
+            state = replace(state, status=AgentStatus.COMPLETED)
+            return answer, state
 
         if decision.action == AgentAction.USE_TOOL:
             return await self._run_tool(state, decision)
 
-        return _REVIEW_RESPONSE
+        state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+        return _REVIEW_RESPONSE, state
 
-    async def _run_tool(self, state: AgentState, decision: AgentDecision) -> str:
+    async def _run_tool(
+        self, state: AgentState, decision: AgentDecision
+    ) -> tuple[str, AgentState]:
         tool = self.tools.get(decision.tool_name or "")
         if tool is None:
-            return _REVIEW_RESPONSE
+            state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+            return _REVIEW_RESPONSE, state
 
         while True:
             result = await tool.execute(decision.arguments or {})
@@ -95,13 +105,14 @@ class AsyncAgentRuntime:
             )
             if verified:
                 last = selected[-1].value if selected else observation
-                return _format_tool_answer(last)
+                return _format_tool_answer(last), state
 
             action = self.recovery.decide(attempts, result.retryable)
             if action == RecoveryAction.RETRY:
                 continue
 
-            return _REVIEW_RESPONSE
+            state = replace(state, status=AgentStatus.NEEDS_HUMAN_REVIEW)
+            return _REVIEW_RESPONSE, state
 
     async def aclose(self) -> None:
         aclose = getattr(self.llm, "aclose", None)
