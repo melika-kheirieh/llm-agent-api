@@ -8,6 +8,19 @@ from app.infra.errors import ConfigurationError
 load_dotenv()
 
 SUPPORTED_PROVIDERS = frozenset({"ollama", "openai"})
+ROUTER_MODE_KEYWORD = "keyword"
+ROUTER_MODE_LLM = "llm"
+SUPPORTED_ROUTER_MODES = frozenset({ROUTER_MODE_KEYWORD, ROUTER_MODE_LLM})
+
+
+def normalize_router_mode(value: str | None) -> str:
+    mode = (value or "").strip().lower()
+    if mode not in SUPPORTED_ROUTER_MODES:
+        raise ConfigurationError(
+            f"Unsupported ROUTER_MODE: {value!r}. "
+            "Expected 'keyword' or 'llm'."
+        )
+    return mode
 
 
 class Settings(BaseModel):
@@ -24,6 +37,7 @@ class Settings(BaseModel):
 
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./app.db")
     llm_timeout_seconds: float | str = os.getenv("LLM_TIMEOUT_SECONDS", "60")
+    router_mode: str = os.getenv("ROUTER_MODE", ROUTER_MODE_KEYWORD)
 
     def validate_startup(self) -> None:
         """Fail fast on invalid settings. Safe to call more than once."""
@@ -48,6 +62,7 @@ class Settings(BaseModel):
                 f"got {self.llm_timeout_seconds!r}."
             )
         self.llm_timeout_seconds = timeout
+        self.router_mode = normalize_router_mode(self.router_mode)
 
         if provider == "openai" and not (self.openai_api_key or "").strip():
             raise ConfigurationError(

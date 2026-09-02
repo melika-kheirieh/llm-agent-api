@@ -47,6 +47,11 @@ def test_direct_run_emits_expected_events():
     assert TraceEventName.RUN_COMPLETED.value in _event_names(trace)
     assert "event_names" in trace.as_log_fields()
     assert trace.as_log_fields()["event_names"] == list(DIRECT_SUCCESS_EVENTS)
+    assert trace.as_log_fields()["router_type"] == "keyword"
+    assert trace.as_log_fields()["decision"] == "direct"
+    assert trace.as_log_fields()["selected_tool"] is None
+    assert isinstance(trace.as_log_fields()["routing_ms"], float)
+    assert trace.as_log_fields()["routing_ms"] >= 0
 
 
 def test_successful_tool_run_emits_expected_events():
@@ -146,6 +151,7 @@ def test_direct_run_creates_completed_trace():
     assert trace.retry_count == 0
     assert trace.outcome == "success"
     assert trace.recovery_decision is None
+    assert trace.router_type == "keyword"
     assert trace.run_id
 
 
@@ -209,3 +215,30 @@ def test_retry_path_reports_attempt_count():
     assert trace.verification_result == "true"
     assert trace.outcome == "success"
     assert trace.recovery_decision == "retry"
+
+
+def test_llm_router_trace_exposes_router_type_and_timing():
+    from app.agent.llm_router import ROUTING_PROMPT_MARKER, LlmAgentRouter
+
+    class RoutingFakeLLM:
+        async def generate(self, prompt: str) -> str:
+            if ROUTING_PROMPT_MARKER in prompt:
+                return '{"action": "direct"}'
+            return "direct answer"
+
+    llm = RoutingFakeLLM()
+    runtime = AsyncAgentRuntime(llm, router=LlmAgentRouter(llm))
+    _answer, trace = asyncio.run(runtime.run_with_trace("Check work order WO-123"))
+
+    fields = trace.as_log_fields()
+    assert trace.router_type == "llm"
+    assert fields["router_type"] == "llm"
+    assert fields["decision"] == "direct"
+    assert fields["selected_tool"] is None
+    assert isinstance(fields["routing_ms"], float)
+    assert fields["routing_ms"] >= 0
+    route_event = next(
+        event for event in trace.events if event.name == TraceEventName.ROUTE_SELECTED.value
+    )
+    assert route_event.metadata["router_type"] == "llm"
+    assert route_event.metadata["action"] == "direct"

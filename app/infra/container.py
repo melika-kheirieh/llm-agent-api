@@ -1,10 +1,11 @@
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.agent.context import ContextPolicy
+from app.agent.llm_router import LlmAgentRouter
 from app.agent.recovery import RecoveryPolicy
-from app.agent.router import AgentRouter
+from app.agent.router import AgentRouter, Router
 from app.agent.tools import AgentTool
 from app.agent.verification import ToolVerifier
-from app.infra.config import settings
+from app.infra.config import ROUTER_MODE_LLM, normalize_router_mode, settings
 from app.llm.async_base import AsyncLLMClient
 from app.tools.work_order import WorkOrderLookupTool
 
@@ -40,6 +41,24 @@ def _build_tools() -> dict[str, AgentTool]:
     return {work_order.name: work_order}
 
 
+def create_router(
+    mode: str,
+    llm: AsyncLLMClient,
+    *,
+    allowed_tools: frozenset[str] | None = None,
+    timeout_seconds: float = 60.0,
+) -> Router:
+    """Build a Router from ROUTER_MODE. Default production mode is keyword."""
+    resolved = normalize_router_mode(mode)
+    if resolved == ROUTER_MODE_LLM:
+        return LlmAgentRouter(
+            llm,
+            allowed_tools=allowed_tools,
+            timeout_seconds=timeout_seconds,
+        )
+    return AgentRouter()
+
+
 def _build_runtime() -> AsyncAgentRuntime:
     return build_runtime()
 
@@ -47,12 +66,22 @@ def _build_runtime() -> AsyncAgentRuntime:
 def build_runtime(
     llm: AsyncLLMClient | None = None,
     tools: dict[str, AgentTool] | None = None,
+    router: Router | None = None,
 ) -> AsyncAgentRuntime:
+    resolved_llm = llm or _build_llm()
+    resolved_tools = _build_tools() if tools is None else tools
+    timeout_seconds = float(settings.llm_timeout_seconds)
+    resolved_router = router if router is not None else create_router(
+        settings.router_mode,
+        resolved_llm,
+        allowed_tools=frozenset(resolved_tools),
+        timeout_seconds=timeout_seconds,
+    )
     return AsyncAgentRuntime(
-        llm or _build_llm(),
-        timeout_seconds=float(settings.llm_timeout_seconds),
-        router=AgentRouter(),
-        tools=_build_tools() if tools is None else tools,
+        resolved_llm,
+        timeout_seconds=timeout_seconds,
+        router=resolved_router,
+        tools=resolved_tools,
         verifier=ToolVerifier(),
         recovery=RecoveryPolicy(max_attempts=2),
         context_policy=ContextPolicy(),

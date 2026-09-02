@@ -2,7 +2,7 @@
 
 HTTP response shapes. `POST /chat` remains `{ "response": string }` only.
 
-Invalid **environment** (unsupported `LLM_PROVIDER`, non-positive `LLM_TIMEOUT_SECONDS`, missing `OPENAI_API_KEY` for OpenAI) fails **process startup** via `ConfigurationError`. That is not an HTTP status.
+Invalid **environment** (unsupported `LLM_PROVIDER`, unsupported `ROUTER_MODE`, non-positive `LLM_TIMEOUT_SECONDS`, missing `OPENAI_API_KEY` for OpenAI) fails **process startup** via `ConfigurationError`. That is not an HTTP status.
 
 ---
 

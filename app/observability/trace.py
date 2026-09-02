@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from app.agent.contracts import AgentAction
 from app.agent.state import AgentState, AgentStatus
-from app.observability.events import TraceEvent, event_names
+from app.observability.events import TraceEvent, TraceEventName, event_names
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class ExecutionTrace:
     failure_class: str | None = None
     thread_id: str | None = None
     recovery_decision: str | None = None
+    router_type: str | None = None
     events: tuple[TraceEvent, ...] = ()
 
     def as_log_fields(self) -> dict:
@@ -30,6 +31,8 @@ class ExecutionTrace:
             "terminal_status": self.terminal_status,
             "decision": self.decision,
             "selected_tool": self.selected_tool,
+            "router_type": self.router_type,
+            "routing_ms": routing_duration_ms(self.events),
             "verification_result": self.verification_result,
             "attempts": self.attempts,
             "retry_count": self.retry_count,
@@ -86,5 +89,20 @@ def trace_from_state(state: AgentState, run_id: str | None = None) -> ExecutionT
         outcome=outcome,
         failure_class=failure_class,
         recovery_decision=recovery_decision,
+        router_type=state.router_type,
         events=state.events,
     )
+
+
+def routing_duration_ms(events: tuple[TraceEvent, ...]) -> float | None:
+    """Elapsed time from run_started to route_selected. None if routing never completed."""
+    started = None
+    routed = None
+    for event in events:
+        if event.name == TraceEventName.RUN_STARTED.value and started is None:
+            started = event
+        elif event.name == TraceEventName.ROUTE_SELECTED.value and routed is None:
+            routed = event
+    if started is None or routed is None:
+        return None
+    return round((routed.timestamp - started.timestamp) * 1000, 2)

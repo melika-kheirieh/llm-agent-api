@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.infra.config import Settings
+from app.infra.config import ROUTER_MODE_KEYWORD, ROUTER_MODE_LLM, Settings
 from app.infra.errors import ConfigurationError
 from app.main import create_app
 
@@ -34,6 +34,7 @@ def test_missing_openai_key_is_rejected():
         llm_provider="openai",
         openai_api_key=None,
         llm_timeout_seconds="30",
+        router_mode=ROUTER_MODE_KEYWORD,
     )
 
     with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
@@ -45,6 +46,7 @@ def test_blank_openai_key_is_rejected():
         llm_provider="openai",
         openai_api_key="  ",
         llm_timeout_seconds="30",
+        router_mode=ROUTER_MODE_KEYWORD,
     )
 
     with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
@@ -52,11 +54,16 @@ def test_blank_openai_key_is_rejected():
 
 
 def test_valid_ollama_configuration_starts():
-    settings = Settings(llm_provider="Ollama", llm_timeout_seconds="15")
+    settings = Settings(
+        llm_provider="Ollama",
+        llm_timeout_seconds="15",
+        router_mode=ROUTER_MODE_KEYWORD,
+    )
     settings.validate_startup()
 
     assert settings.llm_provider == "ollama"
     assert settings.llm_timeout_seconds == 15.0
+    assert settings.router_mode == ROUTER_MODE_KEYWORD
 
 
 def test_valid_openai_configuration_starts():
@@ -64,11 +71,33 @@ def test_valid_openai_configuration_starts():
         llm_provider="openai",
         openai_api_key="sk-test",
         llm_timeout_seconds="10",
+        router_mode=ROUTER_MODE_KEYWORD,
     )
     settings.validate_startup()
 
     assert settings.llm_provider == "openai"
     assert settings.llm_timeout_seconds == 10.0
+
+
+def test_invalid_router_mode_is_rejected():
+    settings = Settings(router_mode="graph", llm_timeout_seconds="60")
+
+    with pytest.raises(ConfigurationError, match="Unsupported ROUTER_MODE"):
+        settings.validate_startup()
+
+
+def test_llm_router_mode_is_accepted():
+    settings = Settings(router_mode="LLM", llm_timeout_seconds="60")
+    settings.validate_startup()
+
+    assert settings.router_mode == ROUTER_MODE_LLM
+
+
+def test_keyword_router_mode_is_the_documented_default():
+    settings = Settings(router_mode="Keyword", llm_timeout_seconds="60")
+    settings.validate_startup()
+
+    assert settings.router_mode == ROUTER_MODE_KEYWORD
 
 
 def test_lifespan_validates_before_db_and_runtime(mocker):

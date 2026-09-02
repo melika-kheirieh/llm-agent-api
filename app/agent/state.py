@@ -27,6 +27,7 @@ class AgentState:
     recovery_decision: RecoveryAction | None = None
     failure_class: FailureClass | None = None
     events: tuple[TraceEvent, ...] = ()
+    router_type: str | None = None
     status: AgentStatus = AgentStatus.CREATED
 
     def record(self, name: TraceEventName | str, **metadata: Any) -> "AgentState":

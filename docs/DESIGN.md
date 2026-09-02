@@ -32,7 +32,7 @@ FastAPI
 validate_startup() → init_db() → init_runtime()
   ↓
 AsyncAgentRuntime.run_with_trace()
-  → Router (AgentRouter default)
+  → Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
        DIRECT  → AsyncLLMClient.generate
        USE_TOOL → AgentTool.execute
                 → Observation
@@ -69,7 +69,8 @@ If that transaction fails, neither row is committed and the API returns `503`.
 Evaluation compares a golden `Trajectory` (action, tool, arguments, verification,
 attempts, recovery, outcome, events) against the same loop. Default cases use the
 keyword router; LLM-routing cases inject `LlmAgentRouter` and a fake that returns
-JSON. It does not score answer text.
+JSON. A separate comparison suite runs the same messages through both strategies
+and scores action, tool, arguments, and failure class — not answer text.
 
 ---
 
@@ -77,7 +78,7 @@ JSON. It does not score answer text.
 
 The live runtime is explicit, not a hidden graph:
 
-* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production and default eval use `AgentRouter` (keyword match on `"work order"` / `"maintenance"`). `LlmAgentRouter` is opt-in: it requests JSON, validates action/tool/arguments, and classifies unusable output as `model_error`. It is not an LLM planner for the rest of the loop.
+* **Router** — `Router` protocol (`async route(request) -> AgentDecision`). Production default is `AgentRouter` (`ROUTER_MODE=keyword`: `"work order"` / `"maintenance"` → `work_order_lookup`). `ROUTER_MODE=llm` wires `LlmAgentRouter` in `build_runtime()` without code changes. `LlmAgentRouter` requests JSON, validates action/tool/arguments, and classifies unusable output as `model_error`. It is not an LLM planner for the rest of the loop.
 * **Tools** — async `AgentTool` protocol; `work_order_lookup` is an in-process stub (always `open` / `plumbing` when an ID is present)
 * **Observation** — tool outcome attached to `AgentState`
 * **Verification** — domain-aware: required fields, requested `work_order_id` match, and allowed status. Not a second model
@@ -85,8 +86,8 @@ The live runtime is explicit, not a hidden graph:
 * **Timeouts** — model `generate` and tool `execute` each have their own `asyncio.timeout`. Persistence is outside both. `CancelledError` is never wrapped as a model failure
 * **Failure taxonomy** — `FailureClass` on state/trace (`model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, …)
 * **Context policy** — drops empty items from the **current run** only (no conversation history)
-* **Traces** — `trace_from_state()` after each run; summary fields are persisted. Step events live on the in-memory `ExecutionTrace` and in `chat_success` logs (`event_names`), not on `GET /runs`
-* **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring
+* **Traces** — `trace_from_state()` after each run; summary fields are persisted. `router_type`, `decision`, `selected_tool`, and `routing_ms` (time from `run_started` to `route_selected`) are on the in-memory trace and `chat_success` logs. They are not on `GET /runs`. Step events live on the in-memory `ExecutionTrace` and in logs (`event_names`).
+* **Evaluation** — deterministic trajectory regression against the same `build_runtime` wiring, not answer-quality scoring. Routing comparison runs the same messages on keyword and LLM routers.
 
 The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM call. Routing and tools are the control loop; `analyze()` is not a product surface.
 
@@ -97,6 +98,7 @@ The DIRECT path still uses a local `analyze()` stub plus `respond()` for the LLM
 Settings stay environment variables (no extra settings framework). `validate_startup()` runs in lifespan **before** `init_db` and `init_runtime`:
 
 * `LLM_PROVIDER` must be `ollama` or `openai`
+* `ROUTER_MODE` must be `keyword` or `llm` (default `keyword`)
 * `LLM_TIMEOUT_SECONDS` must be a finite number `> 0`
 * `OPENAI_API_KEY` is required when the provider is OpenAI
 
@@ -144,7 +146,7 @@ Async SQLAlchemy (SQLite via `sqlite+aiosqlite`):
 
 **Why async?** Provider I/O and SQLite access are wait-bound. An async FastAPI process can overlap `/chat` requests, apply `asyncio.timeout` around **model** and **tool** calls separately, and propagate `CancelledError` without wrapping it as a model failure. Persistence runs after the agent returns and is not covered by those timeouts. The alternative (one timeout around the whole run) made tool hangs look like LLM failures.
 
-**Why deterministic routing by default?** V1 production and eval still use keyword matching so the first boundary stays cheap and reproducible: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. An LLM router exists behind the same `Router` protocol: it requests JSON, validates the parsed decision, and rejects invalid tools/arguments as `model_error`. It is opt-in, not the default, and it is not function-calling or a multi-agent planner.
+**Why deterministic routing by default?** V1 production and eval still use keyword matching so the first boundary stays cheap and reproducible: `"work order"` / `"maintenance"` → `work_order_lookup`, otherwise DIRECT. `ROUTER_MODE=llm` selects `LlmAgentRouter` at process start without changing the HTTP contract. It is not function-calling or a multi-agent planner. LLM routing adds a model call before DIRECT/tool work; `routing_ms` on logs makes that extra latency visible without a metrics vendor.
 
 **Why tool verification?** A successful HTTP-shaped tool result is not automatically a valid answer. `ToolVerifier` is a domain gate (required fields, requested-id match, allowed status) so unverified output cannot be returned as if it were. It is **not** a second model.
 

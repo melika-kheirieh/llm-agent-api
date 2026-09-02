@@ -24,11 +24,15 @@ def extract_work_order_id(message: str) -> str | None:
 class Router(Protocol):
     """Routing boundary used by AsyncAgentRuntime."""
 
+    router_type: str
+
     async def route(self, request: AgentRequest) -> AgentDecision: ...
 
 
 class AgentRouter:
     """Deterministic keyword router. Default production and evaluation path."""
+
+    router_type = "keyword"
 
     async def route(self, request: AgentRequest) -> AgentDecision:
         return self.decide(request)

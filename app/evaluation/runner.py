@@ -3,9 +3,8 @@ import asyncio
 from app.agent.async_runtime import AsyncAgentRuntime
 from app.agent.context import ContextPolicy
 from app.agent.contracts import AgentAction
-from app.agent.llm_router import ROUTING_PROMPT_MARKER, LlmAgentRouter
+from app.agent.llm_router import ROUTING_PROMPT_MARKER
 from app.agent.recovery import RecoveryPolicy
-from app.agent.router import AgentRouter
 from app.agent.state import AgentState
 from app.agent.tools import AgentTool, ToolResult
 from app.agent.verification import ToolVerifier
@@ -13,6 +12,7 @@ from app.evaluation.agent_cases import EvaluationCase
 from app.evaluation.metrics import EvaluationResult
 from app.evaluation.trajectory import Trajectory
 from app.infra.config import settings
+from app.infra.container import create_router
 from app.infra.errors import AgentFailure, DatabaseError
 from app.observability.events import event_names as names_of
 from app.observability.trace import trace_from_state
@@ -120,14 +120,12 @@ def _runtime_for_case(case: EvaluationCase) -> AsyncAgentRuntime:
     model_timeout = (
         timeout if case.model_timeout_seconds is None else case.model_timeout_seconds
     )
-    if case.router_kind == "llm":
-        router = LlmAgentRouter(
-            llm,
-            allowed_tools=frozenset(tools),
-            timeout_seconds=model_timeout,
-        )
-    else:
-        router = AgentRouter()
+    router = create_router(
+        case.router_kind,
+        llm,
+        allowed_tools=frozenset(tools),
+        timeout_seconds=model_timeout,
+    )
     return AsyncAgentRuntime(
         llm,
         timeout_seconds=timeout,

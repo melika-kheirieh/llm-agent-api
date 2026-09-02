@@ -55,6 +55,8 @@ def test_direct_run_persists_and_loads_trace():
     assert stored["selected_tool"] is None
     assert stored["outcome"] == "success"
     assert stored["created_at"]
+    assert "router_type" not in stored
+    assert "routing_ms" not in stored
 
 
 def test_tool_success_persists_trace():
@@ -115,3 +117,4 @@ def test_get_run_returns_persisted_trace(client):
     assert data["decision"] == "direct"
     assert "response" not in data
     assert "events" not in data
+    assert "router_type" not in data

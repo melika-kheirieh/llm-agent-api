@@ -13,6 +13,7 @@ from app.agent.router import AgentRouter
 from app.agent.state import AgentState, AgentStatus
 from app.agent.tools import ToolResult
 from app.agent.verification import ToolVerifier
+from app.infra.config import ROUTER_MODE_KEYWORD, settings
 from app.infra.container import build_runtime
 from app.infra.errors import FailureClass, RoutingError
 from app.observability.events import TraceEventName
@@ -125,7 +126,8 @@ def test_keyword_router_remains_available():
     assert decision.arguments == {"work_order_id": "WO-99"}
 
 
-def test_build_runtime_uses_keyword_router():
+def test_build_runtime_uses_keyword_router(monkeypatch):
+    monkeypatch.setattr(settings, "router_mode", ROUTER_MODE_KEYWORD)
     runtime = build_runtime(llm=RoutingFakeLLM("{}"))
 
     assert isinstance(runtime.router, AgentRouter)

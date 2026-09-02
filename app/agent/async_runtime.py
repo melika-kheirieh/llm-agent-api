@@ -86,8 +86,13 @@ class AsyncAgentRuntime:
 
     async def _execute(self, message: str) -> tuple[str, AgentState]:
         request = AgentRequest(message=message, metadata={})
-        state = AgentState(request=request, status=AgentStatus.RUNNING)
-        state = state.record(TraceEventName.RUN_STARTED)
+        router_type = getattr(self.router, "router_type", None)
+        state = AgentState(
+            request=request,
+            status=AgentStatus.RUNNING,
+            router_type=router_type,
+        )
+        state = state.record(TraceEventName.RUN_STARTED, router_type=router_type)
         try:
             decision = await self.router.route(request)
         except AgentFailure as exc:
@@ -98,6 +103,7 @@ class AsyncAgentRuntime:
                     TraceEventName.ROUTE_SELECTED,
                     action=decision.action.value,
                     tool_name=decision.tool_name,
+                    router_type=router_type,
                 )
             state = replace(
                 state,
@@ -116,6 +122,7 @@ class AsyncAgentRuntime:
             TraceEventName.ROUTE_SELECTED,
             action=decision.action.value,
             tool_name=decision.tool_name,
+            router_type=router_type,
         )
 
         if decision.action == AgentAction.DIRECT:

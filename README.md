@@ -4,7 +4,7 @@ A FastAPI service that runs an async LLM agent with explicit routing, tool use, 
 
 API → `AsyncAgentRuntime` → `AsyncLLMClient` → SQLite.
 
-This is **Agent Core v1**: a real control loop, not a chat wrapper. The default router is **deterministic keyword matching**. An LLM-backed router can be injected behind the same `Router` interface; it is not the production default. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
+This is **Agent Core v1**: a real control loop, not a chat wrapper. The default router is **deterministic keyword matching** (`ROUTER_MODE=keyword`). Set `ROUTER_MODE=llm` to use the LLM-backed router behind the same `Router` interface. The registered tool is an **in-process stub**. Verification is **domain-aware** (required fields, requested-id match, allowed status), not a second model.
 
 Why those choices: [Design Decisions](docs/DESIGN.md#design-decisions) · Demo: [docs/demo.md](docs/demo.md) · Contract: [docs/api-contract.md](docs/api-contract.md)
 
@@ -22,7 +22,7 @@ FastAPI
   GET  /ready         → database SELECT 1
   ↓
 AsyncAgentRuntime
-  → Router (AgentRouter default; LlmAgentRouter opt-in)
+  → Router (AgentRouter default via ROUTER_MODE=keyword; LlmAgentRouter when ROUTER_MODE=llm)
   → tool + Observation + ToolVerifier
   → RecoveryPolicy (max 2 attempts)
   → ExecutionTrace
@@ -44,7 +44,7 @@ cp .env.example .env
 python -m uvicorn app.main:app --reload
 ```
 
-Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example`. Startup validates `LLM_PROVIDER` (`ollama` | `openai`), `LLM_TIMEOUT_SECONDS` (positive number), and `OPENAI_API_KEY` when the provider is OpenAI.
+Requires Python 3.12+ and either [Ollama](https://ollama.com) (`ollama serve && ollama pull gemma`) or an OpenAI API key. Defaults are in `.env.example`. Startup validates `LLM_PROVIDER` (`ollama` | `openai`), `ROUTER_MODE` (`keyword` | `llm`, default `keyword`), `LLM_TIMEOUT_SECONDS` (positive number), and `OPENAI_API_KEY` when the provider is OpenAI.
 
 ---
 
@@ -95,7 +95,7 @@ Empty `message` → **400**. Missing field → **422**. Unknown run → **404**.
 pytest -q
 ```
 
-No real LLM. HTTP tests override the agent with FastAPI DI (`FakeAgent`). Router, tools, recovery, traces, and evaluation run against `AsyncAgentRuntime` with a fake `AsyncLLMClient`.
+No real LLM. HTTP tests override the agent with FastAPI DI (`FakeAgent`). Router, tools, recovery, traces, and evaluation run against `AsyncAgentRuntime` with a fake `AsyncLLMClient`. Routing comparison scores keyword vs LLM trajectories, not answer text.
 
 ---
 

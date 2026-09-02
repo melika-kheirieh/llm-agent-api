@@ -113,6 +113,8 @@ def _validate_work_order_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 class LlmAgentRouter:
     """LLM-backed router. Requests JSON and validates it before returning a decision."""
 
+    router_type = "llm"
+
     def __init__(
         self,
         llm: AsyncLLMClient,

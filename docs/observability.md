@@ -25,6 +25,8 @@ HTTP request logs also record `path`, `method`, `status`, and `latency_ms`. LLM 
 
 `failure_class` values: `model_timeout`, `tool_timeout`, `model_error`, `tool_error`, `verification_failure`, `persistence_failure`, `cancelled`, `unknown`. Successful runs leave it `null`. `recovery_decision` and `retry_count` are on the in-memory trace and in `chat_success` logs; `recovery_decision` is not a database column.
 
+`router_type` (`keyword` or `llm`), `decision`, `selected_tool`, and `routing_ms` (milliseconds from `run_started` to `route_selected`) are on the in-memory `ExecutionTrace` and in `chat_success` logs. They are not persisted and are not returned by `GET /runs/{run_id}`. LLM routing is an extra model call; `routing_ms` is the in-process way to see that cost. No metrics vendor is wired.
+
 Step events (`run_started`, `route_selected`, `tool_started`, `tool_completed`, `tool_failed`, `verification_completed`, `recovery_decision`, `run_completed`, `run_failed`) are recorded on the in-memory trace in order. Logs include `event_names` and `event_count`. Events are not persisted and are not returned by `GET /runs/{run_id}`.
 
 Thread-scoped context is not implemented. Trace objects may carry a `thread_id` of `None`; it is not persisted.
