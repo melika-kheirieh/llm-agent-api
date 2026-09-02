@@ -1,15 +1,15 @@
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
-
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
+
 from app.infra.container import get_agent
 from app.infra.errors import UpstreamLLMError
+from app.main import app
 
 
 class FakeAgent:
