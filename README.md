@@ -1,5 +1,9 @@
 # LLM Agent API
 
+[![CI](https://github.com/melika-kheirieh/llm-agent-api/actions/workflows/ci.yml/badge.svg)](https://github.com/melika-kheirieh/llm-agent-api/actions/workflows/ci.yml)
+
+**Status:** Agent Core v1 is feature-complete and feature-frozen. Maintenance fixes only; see the explicit non-goals below.
+
 A FastAPI service that runs an async LLM agent with explicit routing, tool use, verification, and durable execution traces.
 
 API → `AsyncAgentRuntime` → LangGraph transitions → existing router / tools / verifier / recovery → `AsyncLLMClient` → SQLite (local) or PostgreSQL (production).
